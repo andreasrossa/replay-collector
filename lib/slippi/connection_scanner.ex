@@ -9,10 +9,6 @@ defmodule Slippi.ConnectionScanner do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  def start_scanning do
-    GenServer.call(__MODULE__, :start_scanning)
-  end
-
   def stop_scanning do
     GenServer.cast(__MODULE__, :stop_scanning)
   end
@@ -20,11 +16,6 @@ defmodule Slippi.ConnectionScanner do
   # Server callbacks
   @impl true
   def init(_opts) do
-    {:ok, %{socket: nil}}
-  end
-
-  @impl true
-  def handle_call(:start_scanning, _from, state) do
     case :gen_udp.open(@discovery_port, [
            :binary,
            {:active, true},
@@ -32,11 +23,12 @@ defmodule Slippi.ConnectionScanner do
            {:ip, {0, 0, 0, 0}}
          ]) do
       {:ok, socket} ->
-        {:reply, :ok, %{state | socket: socket}}
+        Logger.info("Opened UDP socket for connection scanning")
+        {:ok, %{socket: socket}}
 
       {:error, reason} ->
         Logger.error("Failed to open UDP socket: #{inspect(reason)}")
-        {:reply, {:error, reason}, state}
+        {:error, reason}
     end
   end
 
@@ -54,6 +46,7 @@ defmodule Slippi.ConnectionScanner do
     case parse_message(message, ip) do
       {:ok, console} ->
         handle_discovered_console(console)
+        {:noreply, state}
 
       :error ->
         {:noreply, state}
@@ -98,6 +91,9 @@ defmodule Slippi.ConnectionScanner do
   defp handle_discovered_console(console) do
     # lookup console in registry:
     case Registry.lookup(Collector.WiiRegistry, console.mac) do
+      [{_pid, _}] ->
+        :ok
+
       [] ->
         # start a new connection and register it
         {:ok, connection} =

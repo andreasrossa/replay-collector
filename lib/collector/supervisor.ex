@@ -8,9 +8,9 @@ defmodule Collector.Supervisor do
   @impl true
   def init(:ok) do
     children = [
-      Slippi.ConnectionScanner,
       {Registry, keys: :unique, name: Collector.WiiRegistry},
-      {DynamicSupervisor, name: Collector.WiiConnectionSupervisor, strategy: :one_for_one}
+      {DynamicSupervisor, name: Collector.WiiConnectionSupervisor, strategy: :one_for_one},
+      Slippi.ConnectionScanner
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
