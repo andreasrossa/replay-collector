@@ -18,15 +18,17 @@ defmodule Slippi.Connection.ReplayProcessor do
     current_cursor = state.connection_details.game_data_cursor
 
     # Handle cursor positions
-    state =
+    result =
       cond do
         # Initial position
         current_cursor == <<0, 0, 0, 0, 0, 0, 0, 0>> ->
-          put_in(state.connection_details.game_data_cursor, next_pos_binary)
+          updated_state = put_in(state.connection_details.game_data_cursor, next_pos_binary)
+          {:ok, updated_state}
 
         # Force position for overflow handling
         force_pos ->
-          put_in(state.connection_details.game_data_cursor, next_pos_binary)
+          updated_state = put_in(state.connection_details.game_data_cursor, next_pos_binary)
+          {:ok, updated_state}
 
         # Position mismatch error
         current_cursor != read_pos_binary ->
@@ -38,10 +40,14 @@ defmodule Slippi.Connection.ReplayProcessor do
 
         # Normal case - positions match
         current_cursor == read_pos_binary ->
-          put_in(state.connection_details.game_data_cursor, next_pos_binary)
+          updated_state = put_in(state.connection_details.game_data_cursor, next_pos_binary)
+          {:ok, updated_state}
       end
 
-    process_replay_event(binary_data, state)
+    case result do
+      {:ok, updated_state} -> process_replay_event(binary_data, updated_state)
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """
