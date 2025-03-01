@@ -17,7 +17,7 @@ defmodule Slippi.ConsoleCommunication do
   defmodule Message do
     @type t :: %__MODULE__{
             type: integer(),
-            payload: map()
+            payload: binary()
           }
     defstruct [:type, :payload]
   end
@@ -60,6 +60,9 @@ defmodule Slippi.ConsoleCommunication do
   @doc """
   Processes received data and returns a list of decoded messages.
   Returns a tuple containing the list of messages and any remaining buffer data.
+
+  - data: the new data to process
+  - buffer: the current buffer of data
   """
   @spec process_received_data(binary(), binary()) :: {[Message.t()], binary()}
   def process_received_data(data, buffer \\ <<>>) do
@@ -67,19 +70,16 @@ defmodule Slippi.ConsoleCommunication do
     process_messages(buffer, [])
   end
 
-  # Processes messages from a buffer that's too small to contain a complete message.
+  # Processes messages from a buffer.
   # Returns the accumulated messages and the remaining buffer.
-  #
-  # Parameters:
-  #   * buffer - Binary data less than 4 bytes (minimum size for message length)
-  #   * messages - List of already processed messages
   @spec process_messages(binary(), [Message.t()]) :: {[Message.t()], binary()}
   defp process_messages(buffer, messages) when byte_size(buffer) < 4 do
+    # If the buffer is less than 4 bytes, we don't have a complete message
     {Enum.reverse(messages), buffer}
   end
 
-  # Handles network handshake messages starting with "HELO\\0".
-  # Skips over the handshake message and continues processing the rest of the buffer.
+  # Handles network keep alive messages starting with "HELO\\0".
+  # Skips over the keep alive message and continues processing the rest of the buffer.
   @spec process_messages(binary(), [Message.t()]) :: {[Message.t()], binary()}
   defp process_messages(<<@network_message, rest::binary>>, messages) do
     process_messages(rest, messages)
@@ -89,7 +89,7 @@ defmodule Slippi.ConsoleCommunication do
   # Returns accumulated messages and keeps the incomplete message in the buffer.
   @spec process_messages(binary(), [Message.t()]) :: {[Message.t()], binary()}
   defp process_messages(<<msg_size::big-unsigned-32, rest::binary>> = buffer, messages)
-       when byte_size(rest) < msg_size do
+       when byte_size(rest) < msg_size + 4 do
     {Enum.reverse(messages), buffer}
   end
 
