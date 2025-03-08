@@ -7,14 +7,20 @@ defmodule Slippi.Connection.MessageSizesParser do
   @doc """
   Processes message size information received from the console.
   """
-  @spec process_message_sizes(binary()) :: %{byte() => non_neg_integer()}
-  def process_message_sizes(<<payload_len::unsigned-integer-size(8), rest::binary>>) do
-    process_message_size_chunk(rest, payload_len - 1, %{})
+  @spec process_message_sizes(binary(), non_neg_integer()) :: %{byte() => non_neg_integer()}
+  def process_message_sizes(payload, payload_len) do
+    process_message_size_chunk(payload, payload_len - 1, %{})
   end
 
   # Exit condition
   @spec process_message_size_chunk(binary(), non_neg_integer(), map()) :: map()
   def process_message_size_chunk(_binary, 0, acc), do: acc
+
+  def process_message_size_chunk(_binary, remaining, acc) when remaining < 0 do
+    Logger.error("Remaining bytes is less than 0: #{remaining}\nacc: #{inspect(acc)}")
+    # exit program
+    System.halt(1)
+  end
 
   # Process a chunk of the message size information
   def process_message_size_chunk(

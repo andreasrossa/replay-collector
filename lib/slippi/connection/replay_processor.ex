@@ -2,15 +2,18 @@ defmodule Slippi.Connection.ReplayProcessor do
   @moduledoc """
   Processes replay data and events from Slippi connections.
   """
+  alias Slippi.ConsoleConnection
+  alias Slippi.Connection.Logger, as: ConnLogger
   require Logger
 
   @doc """
   Handles a replay message containing game data.
   """
-  @spec handle_replay_message(map(), map()) :: {:noreply, map()} | {:error, atom()}
+  @spec handle_replay_message(map(), map(), binary()) :: {:ok, map(), binary()} | {:error, atom()}
   def handle_replay_message(
         %{"data" => data, "pos" => read_pos, "nextPos" => next_pos, "forcePos" => force_pos},
-        state
+        state,
+        buffer
       ) do
     binary_data = :binary.list_to_bin(data)
     read_pos_binary = :binary.list_to_bin(read_pos)
@@ -32,8 +35,9 @@ defmodule Slippi.Connection.ReplayProcessor do
 
         # Position mismatch error
         current_cursor != read_pos_binary ->
-          Logger.error(
-            "Position mismatch. Expected: #{inspect(current_cursor)}, Got: #{inspect(read_pos_binary)}"
+          ConnLogger.error(
+            "Position mismatch. Expected: #{inspect(current_cursor)}, Got: #{inspect(read_pos_binary)}",
+            state
           )
 
           {:error, :position_mismatch}
@@ -45,44 +49,275 @@ defmodule Slippi.Connection.ReplayProcessor do
       end
 
     case result do
-      {:ok, updated_state} -> process_replay_event(binary_data, updated_state)
-      {:error, reason} -> {:error, reason}
+      {:ok, updated_state} ->
+        process_replay_event(<<buffer::binary, binary_data::binary>>, updated_state)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @doc """
   Processes different types of replay events based on command byte.
   """
-  @spec process_replay_event(binary(), map()) :: {:noreply, map()}
-  def process_replay_event(<<0x35, rest::binary>>, state) do
-    Logger.debug("Processing message sizes: #{inspect(rest, limit: 20, base: :hex)}")
-    payload_sizes = Slippi.Connection.MessageSizesParser.process_message_sizes(rest)
-    Logger.debug("Payload sizes: #{inspect(payload_sizes)}")
-    {:noreply, %{state | payload_sizes: payload_sizes}}
+  @spec process_replay_event(binary(), ConsoleConnection.state()) ::
+          {:ok, ConsoleConnection.state(), binary()} | {:error, atom()}
+  def process_replay_event(
+        <<0x35, payload_len::unsigned-integer-size(8), rest::binary>>,
+        state
+      )
+      when payload_len > 0 and byte_size(rest) == payload_len - 1 do
+    ConnLogger.debug("Processing message sizes: #{inspect(rest, limit: 20, base: :hex)}", state)
+    <<payload::binary-size(payload_len - 1), rest::binary>> = rest
+
+    payload_sizes =
+      Slippi.Connection.MessageSizesParser.process_message_sizes(payload, payload_len)
+
+    ConnLogger.debug("Payload sizes: #{inspect(payload_sizes)}", state)
+    updated_state = %{state | payload_sizes: payload_sizes}
+    # Continue processing with the rest of the data
+    process_replay_event(rest, updated_state)
   end
 
-  def process_replay_event(<<0x36, rest_binary::binary>>, state) do
+  def process_replay_event(<<0x36, rest_binary::binary>>, state)
+      when is_map_key(state.payload_sizes, 54) do
     payload_size = state.payload_sizes[54]
-    <<event_data::binary-size(payload_size), _rest::binary>> = rest_binary
 
-    try do
-      ubjson_data = UBJSON.decode(event_data)
-      Logger.debug("UBJSON data: #{inspect(ubjson_data)}")
-    catch
-      :error, reason ->
-        Logger.error("Error decoding UBJSON: #{inspect(reason)}")
+    # check if we have enough data to parse the game start payload
+    case rest_binary do
+      <<event_data::binary-size(payload_size), remaining::binary>> ->
+        try do
+          # Parse player data from the game start payload
+          {:ok, game_settings} = Slippi.Parser.MetadataParser.parse_game_start(event_data)
+
+          ConnLogger.info("Starting game on Wii #{state.wii.nickname} (#{state.wii.mac})", state)
+
+          updated_state = %{state | metadata: %{state.metadata | game_settings: game_settings}}
+
+          process_replay_event(remaining, updated_state)
+        catch
+          :error, reason ->
+            ConnLogger.error("Error parsing game start data: #{inspect(reason)}", state)
+            {:error, :game_start_parsing_error}
+        end
+
+      _ ->
+        ConnLogger.error(
+          "Insufficient data for command 0x36 payload, expected size: #{payload_size}",
+          state
+        )
+
+        {:error, :insufficient_data}
     end
-
-    {:noreply, state}
   end
 
-  def process_replay_event(<<0x39, payload::binary>>, state) do
-    Logger.debug("Processing game end event: #{inspect(payload, limit: 20, base: :hex)}")
-    {:noreply, state}
+  # Fallback for 0x36 when the payload size is not available
+  def process_replay_event(<<0x36, _rest::binary>>, state) do
+    ConnLogger.warning("Received 0x36 command but no payload size is defined in state", state)
+    {:error, :no_payload_size}
   end
 
-  def process_replay_event(<<_command, _rest::binary>>, state) do
-    # Logger.debug("Unknown command: #{inspect(command, base: :hex)}")
-    {:noreply, state}
+  # Generic pattern matcher for commands with known payload sizes
+  def process_replay_event(<<command, rest::binary>>, state)
+      when is_map_key(state.payload_sizes, command) do
+    payload_size = state.payload_sizes[command]
+
+    case rest do
+      <<payload::binary-size(payload_size), remaining::binary>> ->
+        ConnLogger.debug(
+          "Command 0x#{Integer.to_string(command, 16)} payload: #{inspect(payload, limit: 20, base: :hex)}",
+          state
+        )
+
+        # Process the specific command payload here
+        # ...
+
+        # Continue processing any remaining data
+        process_replay_event(remaining, state)
+
+      _ ->
+        ConnLogger.warning(
+          "Insufficient data for command 0x#{Integer.to_string(command, 16)} payload, expected size: #{payload_size}",
+          state
+        )
+
+        {:error, :insufficient_data}
+    end
+  end
+
+  def process_replay_event(<<command, rest::binary>>, state) do
+    ConnLogger.warning(
+      "Received unknown command: 0x#{Integer.to_string(command, 16)} with a payload size of #{byte_size(rest)}",
+      state
+    )
+
+    {:ok, state, rest}
+  end
+
+  def process_replay_event(<<>>, state) do
+    ConnLogger.warning("Received empty command", state)
+    {:ok, state, <<>>}
+  end
+end
+
+defmodule Slippi.Connection.PlayerParser do
+  @moduledoc """
+  Parses player data from Slippi replay game start payloads.
+  """
+
+  @doc """
+  Parses player data from the game start payload for a specific player index.
+  Returns nil if the player doesn't exist (port is 0).
+  """
+  @spec parse_player(binary(), integer()) :: map() | nil
+  def parse_player(payload, player_index) when player_index in 0..3 do
+    # Check if port is valid (not 0)
+    port_offset = 0x61 + player_index * 0x24
+    port = binary_part(payload, port_offset, 1) |> :binary.decode_unsigned()
+
+    if port == 0 do
+      nil
+    else
+      # Controller Fix parsing
+      cf_offset = player_index * 0x8
+      dashback = binary_part(payload, 0x141 + cf_offset, 4) |> :binary.decode_unsigned()
+      shield_drop = binary_part(payload, 0x145 + cf_offset, 4) |> :binary.decode_unsigned()
+
+      controller_fix =
+        cond do
+          dashback != shield_drop -> "Mixed"
+          dashback == 1 -> "UCF"
+          dashback == 2 -> "Dween"
+          true -> "None"
+        end
+
+      # Nametag parsing
+      nametag_length = 0x10
+      nametag_offset = player_index * nametag_length
+      nametag_start = 0x161 + nametag_offset
+      nametag_data = binary_part(payload, nametag_start, nametag_length)
+      # Convert Uint8Array to Buffer equivalent in Elixir
+      nametag = decode_shift_jis(nametag_data)
+
+      # Display name parsing
+      display_name_length = 0x10
+      display_name_offset = player_index * display_name_length
+      display_name_start = 0x1A1 + display_name_offset
+      display_name_data = binary_part(payload, display_name_start, display_name_length)
+      display_name = decode_shift_jis(display_name_data)
+
+      # Connect code parsing
+      connect_code_length = 0x10
+      connect_code_offset = player_index * connect_code_length
+      connect_code_start = 0x1E1 + connect_code_offset
+      connect_code_data = binary_part(payload, connect_code_start, connect_code_length)
+      connect_code = decode_shift_jis(connect_code_data)
+
+      # User ID parsing
+      user_id_length = 0x1F
+      user_id_offset = player_index * user_id_length
+      user_id_start = 0x221 + user_id_offset
+      user_id_data = binary_part(payload, user_id_start, user_id_length)
+      user_id = decode_utf8(user_id_data)
+
+      # Other player data
+      character_id =
+        binary_part(payload, 0x65 + player_index * 0x24, 1) |> :binary.decode_unsigned()
+
+      player_type =
+        binary_part(payload, 0x66 + player_index * 0x24, 1) |> :binary.decode_unsigned()
+
+      starting_stocks =
+        binary_part(payload, 0x67 + player_index * 0x24, 1) |> :binary.decode_unsigned()
+
+      costume_index =
+        binary_part(payload, 0x68 + player_index * 0x24, 1) |> :binary.decode_unsigned()
+
+      team_shade =
+        binary_part(payload, 0x6C + player_index * 0x24, 1) |> :binary.decode_unsigned()
+
+      handicap = binary_part(payload, 0x6D + player_index * 0x24, 1) |> :binary.decode_unsigned()
+      team_id = binary_part(payload, 0x6E + player_index * 0x24, 1) |> :binary.decode_unsigned()
+
+      # Construct player object
+      %{
+        port: port,
+        character_id: character_id,
+        player_type: player_type,
+        starting_stocks: starting_stocks,
+        costume_index: costume_index,
+        team_shade: team_shade,
+        handicap: handicap,
+        team_id: team_id,
+        controller_fix: controller_fix,
+        nametag: nametag,
+        display_name: display_name,
+        connect_code: connect_code,
+        user_id: user_id
+      }
+    end
+  end
+
+  @doc """
+  Decodes a binary string encoded with Shift-JIS, removing null terminators.
+  Similar to the iconv.decode + splitting by null in the TypeScript code.
+  """
+  def decode_shift_jis(binary) do
+    try do
+      # Convert binary to a list of bytes for processing
+      bytes = :binary.bin_to_list(binary)
+
+      # Find the first null terminator or take the whole string
+      null_pos = Enum.find_index(bytes, &(&1 == 0))
+      relevant_bytes = if null_pos, do: Enum.take(bytes, null_pos), else: bytes
+
+      # Convert back to binary for Codepagex processing
+      data = :binary.list_to_bin(relevant_bytes)
+
+      # Decode using Shift-JIS and convert to halfwidth if possible
+      case Codepagex.from_string(data, :"VENDORS/MICSFT/WINDOWS/CP932") do
+        {:ok, string} -> to_halfwidth(string)
+        _ -> ""
+      end
+    rescue
+      _ -> ""
+    end
+  end
+
+  @doc """
+  Decodes a binary string encoded with UTF-8, removing null terminators.
+  """
+  def decode_utf8(binary) do
+    try do
+      bytes = :binary.bin_to_list(binary)
+      null_pos = Enum.find_index(bytes, &(&1 == 0))
+      relevant_bytes = if null_pos, do: Enum.take(bytes, null_pos), else: bytes
+      data = :binary.list_to_bin(relevant_bytes)
+
+      case String.valid?(data) do
+        true -> data
+        false -> ""
+      end
+    rescue
+      _ -> ""
+    end
+  end
+
+  @doc """
+  Converts fullwidth characters to halfwidth when possible.
+  This is a simplified version of the toHalfwidth function in the TypeScript code.
+  You may need to expand this based on your specific requirements.
+  """
+  def to_halfwidth(string) do
+    # This is a simplified implementation
+    # You might want to add more conversions based on your needs
+    string
+    |> String.replace("！", "!")
+    |> String.replace("？", "?")
+    |> String.replace("：", ":")
+    |> String.replace("；", ";")
+    |> String.replace("，", ",")
+    |> String.replace("．", ".")
+    |> String.replace("　", " ")
   end
 end

@@ -5,16 +5,23 @@ defmodule Slippi.ConsoleConnection do
   """
 
   use GenServer
-  require Logger
 
   alias Slippi.ConsoleCommunication
   alias Slippi.Connection.Handler
   alias Slippi.Connection.ReplayProcessor
+  alias Slippi.Connection.Logger, as: ConnLogger
 
   @type connection_details :: %{
           game_data_cursor: binary(),
           version: String.t(),
           client_token: integer()
+        }
+
+  @type metadata :: %{
+          consoleNickname: String.t() | nil,
+          startTime: DateTime.t() | nil,
+          lastFrame: integer() | nil,
+          game_settings: map() | nil
         }
 
   @type command :: byte()
@@ -23,9 +30,11 @@ defmodule Slippi.ConsoleConnection do
           wii: Slippi.WiiConsole.t(),
           socket: :gen_tcp.socket() | nil,
           buffer: binary(),
+          message_buffer: binary(),
           payload_sizes: payload_sizes() | nil,
           split_message_buffer: binary() | nil,
-          connection_details: connection_details() | nil
+          connection_details: connection_details() | nil,
+          metadata: metadata()
         }
 
   ##############
@@ -87,12 +96,12 @@ defmodule Slippi.ConsoleConnection do
   @spec init(Slippi.WiiConsole.t()) ::
           {:ok, state()} | {:error, {:already_connected, pid()} | term()}
   def init(wii_console) do
-    Logger.info("Starting console connection for #{wii_console.nickname}")
+    ConnLogger.debug("Starting console connection")
 
     # lookup if the console is already connected. return :already_connected if it is.
     case Registry.lookup(Collector.WiiRegistry, wii_console.mac) do
       [{_pid, %{connection: connection}}] ->
-        Logger.info("Console already connected: #{wii_console.nickname}")
+        ConnLogger.warning("Console already connected: #{wii_console.nickname}")
         {:error, {:already_connected, connection}}
 
       [] ->
@@ -109,13 +118,20 @@ defmodule Slippi.ConsoleConnection do
                wii: wii_console,
                socket: socket,
                buffer: <<>>,
+               message_buffer: <<>>,
                payload_sizes: nil,
                split_message_buffer: nil,
+               metadata: %{
+                 consoleNickname: nil,
+                 startTime: nil,
+                 lastFrame: nil,
+                 game_settings: nil
+               },
                connection_details: initial_connection_details
              }}
 
           {:error, reason} ->
-            Logger.error("Failed to connect to Wii at #{wii_console.ip}: #{inspect(reason)}")
+            ConnLogger.error("Failed to connect to Wii at #{wii_console.ip}: #{inspect(reason)}")
             {:error, reason}
         end
     end
@@ -126,18 +142,18 @@ defmodule Slippi.ConsoleConnection do
   def handle_cast({:send_message, message}, %{socket: socket} = state) when not is_nil(socket) do
     case Handler.send_message(socket, message) do
       :ok ->
-        Logger.debug("Sent message to Wii at #{state.wii.ip}")
+        ConnLogger.debug("Sent message to Wii: #{inspect(message)}")
         {:noreply, state}
 
       {:error, reason} ->
-        Logger.error("Failed to send message: #{inspect(reason)}")
+        ConnLogger.error("Failed to send message: #{inspect(reason)}")
         {:noreply, state}
     end
   end
 
   @impl true
   def handle_cast({:send_message, _message}, state) do
-    Logger.warning("Attempted to send message while disconnected")
+    ConnLogger.warning("Attempted to send message while disconnected")
     {:noreply, state}
   end
 
@@ -145,14 +161,17 @@ defmodule Slippi.ConsoleConnection do
   @spec handle_cast(:disconnect, state :: state()) :: {:stop, :normal, state()}
   def handle_cast(:disconnect, state) do
     Handler.close(state.socket)
-    Logger.info("Disconnected from Wii at #{state.wii.ip}")
+    ConnLogger.info("Disconnected from Wii")
     {:stop, :normal, state}
   end
 
   @impl true
   @spec handle_info({:tcp, :gen_tcp.socket(), binary()}, state :: state()) :: {:noreply, state()}
-  def handle_info({:tcp, _socket, data}, state) do
-    {messages, new_buffer} = ConsoleCommunication.process_received_data(data, state.buffer)
+  def handle_info(
+        {:tcp, _socket, data},
+        %{buffer: buffer, message_buffer: message_buffer} = state
+      ) do
+    {messages, new_buffer} = ConsoleCommunication.process_received_data(data, buffer)
 
     # Handle each decoded message and accumulate state changes
     result =
@@ -162,20 +181,39 @@ defmodule Slippi.ConsoleConnection do
           %ConsoleCommunication.Message{type: type, payload: payload} ->
             case type do
               1 ->
-                Logger.debug("Received handshake response")
-                {:cont, {:ok, acc_state}}
+                # set metadata
+                new_state =
+                  put_in(acc_state.connection_details.version, payload["nintendontVersion"])
+
+                client_token = :binary.list_to_bin(payload["clientToken"])
+                client_token = :binary.decode_unsigned(client_token, :big)
+
+                new_state =
+                  put_in(new_state.connection_details.client_token, client_token)
+
+                # set game data cursor
+                new_state =
+                  put_in(
+                    new_state.connection_details.game_data_cursor,
+                    :binary.list_to_bin(payload["pos"])
+                  )
+
+                {:cont, {:ok, new_state}}
 
               2 ->
-                case ReplayProcessor.handle_replay_message(payload, acc_state) do
-                  {:noreply, new_state} -> {:cont, {:ok, new_state}}
-                  {:error, reason} -> {:halt, {:error, reason}}
+                case ReplayProcessor.handle_replay_message(payload, acc_state, message_buffer) do
+                  {:ok, new_state, new_message_buffer} ->
+                    {:cont, {:ok, %{new_state | message_buffer: new_message_buffer}}}
+
+                  {:error, reason} ->
+                    {:halt, {:error, reason}}
                 end
 
               3 ->
                 {:cont, {:ok, acc_state}}
 
               _ ->
-                Logger.warning("Unknown message type: #{type}")
+                ConnLogger.warning("Unknown message type: #{type}")
                 {:cont, {:ok, acc_state}}
             end
         end
@@ -186,27 +224,27 @@ defmodule Slippi.ConsoleConnection do
         {:noreply, new_state}
 
       {:error, reason} ->
-        Logger.error("Error processing message: #{inspect(reason)}")
+        ConnLogger.error("Error processing message: #{inspect(reason)}")
         {:stop, reason, state}
     end
   end
 
   @impl true
   def handle_info({:tcp_closed, _socket}, state) do
-    Logger.info("Connection closed by Wii")
+    ConnLogger.info("Connection closed by Wii")
     {:stop, :normal, state}
   end
 
   @impl true
   def handle_info({:tcp_error, _socket, reason}, state) do
-    Logger.error("TCP error: #{inspect(reason)}")
+    ConnLogger.error("TCP error: #{inspect(reason)}")
     {:stop, :normal, state}
   end
 
   @impl true
   def terminate(_reason, state) do
     Handler.close(state.socket)
-    Logger.debug("Terminating connection: #{inspect(state)}")
+    ConnLogger.debug("Terminating connection: #{inspect(state)}")
     :ok
   end
 end

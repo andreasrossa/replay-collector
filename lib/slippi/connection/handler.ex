@@ -39,7 +39,7 @@ defmodule Slippi.Connection.Handler do
   def send_handshake(socket) do
     :gen_tcp.send(
       socket,
-      ConsoleCommunication.generate_handshake(<<0, 0, 0, 0, 0, 0, 0, 0>>, 0, true)
+      ConsoleCommunication.generate_handshake(<<0, 0, 0, 0, 0, 0, 0, 0>>, 0, false)
     )
   end
 

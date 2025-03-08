@@ -1,3 +1,4 @@
 %{
+  "codepagex": {:hex, :codepagex, "0.1.9", "430d10a3eee3a170e6e472e456f1a61f851e0b55ecfcc00a0f95938c3acb5a02", [:mix], [], "hexpm", "b7145dd1fdb9fcc33c53e9234040a211b5d46f0fc93d238232e6e72aa5d1c049"},
   "jason": {:hex, :jason, "1.4.4", "b9226785a9aa77b6857ca22832cffa5d5011a667207eb2a0ad56adb5db443b8a", [:mix], [{:decimal, "~> 1.0 or ~> 2.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "c5eb0cab91f094599f94d55bc63409236a8ec69a21a67814529e8d5f6cc90b3b"},
 }

@@ -199,12 +199,42 @@ defmodule UBJSON do
     {str, rest}
   end
 
+  # Handle optimized uint8 array (binary data)
   defp do_decode(<<marker1::8, marker2::8, marker3::8, marker4::8, rest::binary>>)
        when marker1 == @markers.array_start and marker2 == @markers.type and
               marker3 == @markers.uint8 and marker4 == @markers.count do
-    # Handle optimized uint8 array (binary data)
     {count, rest} = decode_int(rest)
     decode_uint8_array(rest, count)
+  end
+
+  # Handle optimized array with type and count
+  defp do_decode(<<marker1::8, marker2::8, type_marker::8, marker4::8, rest::binary>>)
+       when marker1 == @markers.array_start and marker2 == @markers.type and
+              marker4 == @markers.count do
+    {count, rest} = decode_int(rest)
+    decode_typed_array(rest, type_marker, count, [])
+  end
+
+  # Handle array with count only
+  defp do_decode(<<marker1::8, marker2::8, rest::binary>>)
+       when marker1 == @markers.array_start and marker2 == @markers.count do
+    {count, rest} = decode_int(rest)
+    decode_counted_array(rest, count, [])
+  end
+
+  # Handle object with type and count
+  defp do_decode(<<marker1::8, marker2::8, type_marker::8, marker4::8, rest::binary>>)
+       when marker1 == @markers.object_start and marker2 == @markers.type and
+              marker4 == @markers.count do
+    {count, rest} = decode_int(rest)
+    decode_typed_object(rest, type_marker, count, %{})
+  end
+
+  # Handle object with count only
+  defp do_decode(<<marker1::8, marker2::8, rest::binary>>)
+       when marker1 == @markers.object_start and marker2 == @markers.count do
+    {count, rest} = decode_int(rest)
+    decode_counted_object(rest, count, %{})
   end
 
   defp do_decode(<<marker::8, rest::binary>>) when marker == @markers.array_start do
@@ -237,6 +267,104 @@ defmodule UBJSON do
   defp decode_uint8_array(binary, count) do
     <<array::binary-size(count), rest::binary>> = binary
     {for(<<byte::unsigned-8 <- array>>, do: byte), rest}
+  end
+
+  # Decode array with known count but mixed types
+  defp decode_counted_array(binary, 0, acc), do: {Enum.reverse(acc), binary}
+
+  defp decode_counted_array(binary, count, acc) do
+    {value, rest} = do_decode(binary)
+    decode_counted_array(rest, count - 1, [value | acc])
+  end
+
+  # Decode array with known type and count
+  defp decode_typed_array(binary, _type_marker, 0, acc), do: {Enum.reverse(acc), binary}
+
+  defp decode_typed_array(binary, type_marker, count, acc) do
+    {value, rest} = decode_typed_value(binary, type_marker)
+    decode_typed_array(rest, type_marker, count - 1, [value | acc])
+  end
+
+  # Decode object with known count but mixed types
+  defp decode_counted_object(binary, 0, acc), do: {acc, binary}
+
+  defp decode_counted_object(binary, count, acc) do
+    {key_size, rest} = decode_int(binary)
+    <<key::binary-size(key_size), rest2::binary>> = rest
+    {value, rest3} = do_decode(rest2)
+    decode_counted_object(rest3, count - 1, Map.put(acc, key, value))
+  end
+
+  # Decode object with known type and count
+  defp decode_typed_object(binary, _type_marker, 0, acc), do: {acc, binary}
+
+  defp decode_typed_object(binary, type_marker, count, acc) do
+    {key_size, rest} = decode_int(binary)
+    <<key::binary-size(key_size), rest2::binary>> = rest
+    {value, rest3} = decode_typed_value(rest2, type_marker)
+    decode_typed_object(rest3, type_marker, count - 1, Map.put(acc, key, value))
+  end
+
+  # Decode a value of a specific type (without type marker)
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.nil_value,
+    do: {nil, binary}
+
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.noop,
+    do: {:noop, binary}
+
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.true,
+    do: {true, binary}
+
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.false,
+    do: {false, binary}
+
+  defp decode_typed_value(<<value::signed-8, rest::binary>>, type_marker)
+       when type_marker == @markers.int8,
+       do: {value, rest}
+
+  defp decode_typed_value(<<value::unsigned-8, rest::binary>>, type_marker)
+       when type_marker == @markers.uint8,
+       do: {value, rest}
+
+  defp decode_typed_value(<<value::signed-big-16, rest::binary>>, type_marker)
+       when type_marker == @markers.int16,
+       do: {value, rest}
+
+  defp decode_typed_value(<<value::signed-big-32, rest::binary>>, type_marker)
+       when type_marker == @markers.int32,
+       do: {value, rest}
+
+  defp decode_typed_value(<<value::signed-big-64, rest::binary>>, type_marker)
+       when type_marker == @markers.int64,
+       do: {value, rest}
+
+  defp decode_typed_value(<<value::float-big-32, rest::binary>>, type_marker)
+       when type_marker == @markers.float32,
+       do: {value, rest}
+
+  defp decode_typed_value(<<value::float-big-64, rest::binary>>, type_marker)
+       when type_marker == @markers.float64,
+       do: {value, rest}
+
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.string do
+    {size, rest} = decode_int(binary)
+    <<str::binary-size(size), rest2::binary>> = rest
+    {str, rest2}
+  end
+
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.high_precision do
+    {size, rest} = decode_int(binary)
+    <<str::binary-size(size), rest2::binary>> = rest
+    {String.to_integer(str), rest2}
+  end
+
+  # For container types, we need to decode them normally with their markers
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.array_start do
+    do_decode(<<@markers.array_start, binary::binary>>)
+  end
+
+  defp decode_typed_value(binary, type_marker) when type_marker == @markers.object_start do
+    do_decode(<<@markers.object_start, binary::binary>>)
   end
 
   defp decode_array(<<marker::8, rest::binary>>, acc) when marker == @markers.array_end do
