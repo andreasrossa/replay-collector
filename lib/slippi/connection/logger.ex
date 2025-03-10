@@ -2,7 +2,7 @@ defmodule Slippi.Connection.Logger do
   @moduledoc """
   Custom logger for Slippi connections using Logger metadata.
   """
-  alias Slippi.ConsoleConnection
+  alias Slippi.WiiConsole
   require Logger
 
   @doc """
@@ -10,11 +10,11 @@ defmodule Slippi.Connection.Logger do
   All subsequent logs from this process will include this metadata.
   Call this once when initializing your process or when Wii information changes.
   """
-  @spec set_wii_context(ConsoleConnection.state()) :: :ok
-  def set_wii_context(state) when is_map_key(state, :wii) do
+  @spec set_wii_context(WiiConsole.t()) :: :ok
+  def set_wii_context(wii_console) do
     Logger.metadata(
-      wii_nickname: state.wii.nickname || "unknown",
-      wii_ip: state.wii.ip || "unknown"
+      wii_nickname: wii_console.nickname || "unknown",
+      wii_ip: wii_console.ip || "unknown"
     )
   end
 

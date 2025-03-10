@@ -7,9 +7,6 @@ defmodule Slippi.Parser.MetadataParser do
 
   @spec parse_game_start(binary()) :: {:ok, map()} | {:error, atom()}
   def parse_game_start(payload) do
-    # I dont want to adjust the offsets so I'm just going to prepend the command byte
-    payload = <<0x36, payload::binary>>
-
     players =
       Enum.map([0, 1, 2, 3], fn player_index ->
         parse_player(payload, player_index)
@@ -20,28 +17,26 @@ defmodule Slippi.Parser.MetadataParser do
 
     # SLP Version
     slp_version =
-      "#{:binary.decode_unsigned(binary_part(payload, 0x1, 1))}.#{:binary.decode_unsigned(binary_part(payload, 0x2, 1))}.#{:binary.decode_unsigned(binary_part(payload, 0x3, 1))}"
+      "#{read_uint_8(payload, 0x1)}.#{read_uint_8(payload, 0x2)}.#{read_uint_8(payload, 0x3)}"
 
     Logger.debug("SLP Version: #{slp_version}")
 
     # Game settings
     # For bit flags, we need to do bitwise operations
-    byte_5 = :binary.decode_unsigned(binary_part(payload, 0x5, 1))
-    timer_type = band(byte_5, 0x03)
-    in_game_mode = band(byte_5, 0xE0)
+    timer_type = read_uint_8(payload, 0x5) &&& 0x03
+    in_game_mode = read_uint_8(payload, 0x5) &&& 0xE0
 
     Logger.debug("Timer type: #{timer_type}")
     Logger.debug("In game mode: #{in_game_mode}")
 
-    byte_6 = :binary.decode_unsigned(binary_part(payload, 0x6, 1))
-    friendly_fire_enabled = band(byte_6, 0x01) != 0
+    friendly_fire_enabled = read_uint_8(payload, 0x6) != 0
 
     Logger.debug("Friendly fire enabled: #{friendly_fire_enabled}")
 
-    is_teams = :binary.decode_unsigned(binary_part(payload, 0xD, 1)) != 0
-    item_spawn_behavior = :binary.decode_unsigned(binary_part(payload, 0x10, 1))
-    stage_id = :binary.decode_unsigned(binary_part(payload, 0x13, 2))
-    starting_timer_seconds = :binary.decode_unsigned(binary_part(payload, 0x15, 4))
+    is_teams = read_uint_8(payload, 0xD) != 0
+    item_spawn_behavior = read_uint_8(payload, 0x10)
+    stage_id = read_uint_16(payload, 0x13)
+    starting_timer_seconds = read_uint_32(payload, 0x15)
 
     Logger.debug("Is teams: #{is_teams}")
     Logger.debug("Item spawn behavior: #{item_spawn_behavior}")
@@ -52,9 +47,9 @@ defmodule Slippi.Parser.MetadataParser do
     # Simplified version for now
     enabled_items = %{}
 
-    scene = :binary.decode_unsigned(binary_part(payload, 0x1A3, 1))
-    game_mode = :binary.decode_unsigned(binary_part(payload, 0x1A4, 1))
-    language = :binary.decode_unsigned(binary_part(payload, 0x2BD, 1))
+    scene = read_uint_8(payload, 0x1A3)
+    game_mode = read_uint_8(payload, 0x1A4)
+    language = read_uint_8(payload, 0x2BD)
 
     Logger.debug("Scene: #{scene}")
     Logger.debug("Game mode: #{game_mode}")
@@ -63,9 +58,9 @@ defmodule Slippi.Parser.MetadataParser do
     # gameInfoBlock would need implementation similar to TypeScript version
     game_info_block = %{}
 
-    random_seed = :binary.decode_unsigned(binary_part(payload, 0x13D, 4))
-    is_pal = :binary.decode_unsigned(binary_part(payload, 0x1A1, 1)) != 0
-    is_frozen_ps = :binary.decode_unsigned(binary_part(payload, 0x1A2, 1)) != 0
+    random_seed = read_uint_32(payload, 0x13D)
+    is_pal = read_uint_8(payload, 0x1A1) != 0
+    is_frozen_ps = read_uint_8(payload, 0x1A2) != 0
 
     # Match info
     match_id_length = 51
@@ -73,8 +68,8 @@ defmodule Slippi.Parser.MetadataParser do
     match_id_data = binary_part(payload, match_id_start, match_id_length)
     match_id = decode_utf8(match_id_data)
 
-    game_number = :binary.decode_unsigned(binary_part(payload, 0x2F1, 4))
-    tiebreaker_number = :binary.decode_unsigned(binary_part(payload, 0x2F5, 4))
+    game_number = read_uint_32(payload, 0x2F1)
+    tiebreaker_number = read_uint_32(payload, 0x2F5)
 
     match_info = %{
       match_id: match_id,
@@ -108,6 +103,36 @@ defmodule Slippi.Parser.MetadataParser do
     Logger.debug("Game settings: #{inspect(game_settings)}")
 
     {:ok, game_settings}
+  end
+
+  defp read_uint_16(payload, offset) do
+    try do
+      :binary.decode_unsigned(binary_part(payload, offset, 2))
+    rescue
+      _ ->
+        Logger.error("Error reading uint16 at offset #{offset}")
+        nil
+    end
+  end
+
+  defp read_uint_8(payload, offset) do
+    try do
+      :binary.decode_unsigned(binary_part(payload, offset, 1))
+    rescue
+      _ ->
+        Logger.error("Error reading uint8 at offset #{offset}")
+        nil
+    end
+  end
+
+  defp read_uint_32(payload, offset) do
+    try do
+      :binary.decode_unsigned(binary_part(payload, offset, 4))
+    rescue
+      _ ->
+        Logger.error("Error reading uint32 at offset #{offset}")
+        nil
+    end
   end
 
   @doc """

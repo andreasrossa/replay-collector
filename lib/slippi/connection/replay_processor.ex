@@ -6,10 +6,13 @@ defmodule Slippi.Connection.ReplayProcessor do
   alias Slippi.Connection.Logger, as: ConnLogger
   require Logger
 
+  @network_message "HELO\0"
+
   @doc """
   Handles a replay message containing game data.
   """
-  @spec handle_replay_message(map(), map(), binary()) :: {:ok, map(), binary()} | {:error, atom()}
+  @spec handle_replay_message(map(), ConsoleConnection.state(), binary()) ::
+          {:ok, ConsoleConnection.state(), binary()} | {:error, atom()}
   def handle_replay_message(
         %{"data" => data, "pos" => read_pos, "nextPos" => next_pos, "forcePos" => force_pos},
         state,
@@ -36,8 +39,7 @@ defmodule Slippi.Connection.ReplayProcessor do
         # Position mismatch error
         current_cursor != read_pos_binary ->
           ConnLogger.error(
-            "Position mismatch. Expected: #{inspect(current_cursor)}, Got: #{inspect(read_pos_binary)}",
-            state
+            "Position mismatch. Expected: #{inspect(current_cursor)}, Got: #{inspect(read_pos_binary)}"
           )
 
           {:error, :position_mismatch}
@@ -50,7 +52,13 @@ defmodule Slippi.Connection.ReplayProcessor do
 
     case result do
       {:ok, updated_state} ->
-        process_replay_event(<<buffer::binary, binary_data::binary>>, updated_state)
+        case process_replay_event_data(<<buffer::binary, binary_data::binary>>, updated_state) do
+          {:ok, updated_state, rest} ->
+            {:ok, updated_state, rest}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -60,103 +68,111 @@ defmodule Slippi.Connection.ReplayProcessor do
   @doc """
   Processes different types of replay events based on command byte.
   """
-  @spec process_replay_event(binary(), ConsoleConnection.state()) ::
+  @spec process_replay_event_data(binary(), ConsoleConnection.state()) ::
           {:ok, ConsoleConnection.state(), binary()} | {:error, atom()}
-  def process_replay_event(
-        <<0x35, payload_len::unsigned-integer-size(8), rest::binary>>,
+  def process_replay_event_data(
+        <<@network_message, rest::binary>>,
         state
-      )
-      when payload_len > 0 and byte_size(rest) == payload_len - 1 do
-    ConnLogger.debug("Processing message sizes: #{inspect(rest, limit: 20, base: :hex)}", state)
-    <<payload::binary-size(payload_len - 1), rest::binary>> = rest
-
-    payload_sizes =
-      Slippi.Connection.MessageSizesParser.process_message_sizes(payload, payload_len)
-
-    ConnLogger.debug("Payload sizes: #{inspect(payload_sizes)}", state)
-    updated_state = %{state | payload_sizes: payload_sizes}
-    # Continue processing with the rest of the data
-    process_replay_event(rest, updated_state)
-  end
-
-  def process_replay_event(<<0x36, rest_binary::binary>>, state)
-      when is_map_key(state.payload_sizes, 54) do
-    payload_size = state.payload_sizes[54]
-
-    # check if we have enough data to parse the game start payload
-    case rest_binary do
-      <<event_data::binary-size(payload_size), remaining::binary>> ->
-        try do
-          # Parse player data from the game start payload
-          {:ok, game_settings} = Slippi.Parser.MetadataParser.parse_game_start(event_data)
-
-          ConnLogger.info("Starting game on Wii #{state.wii.nickname} (#{state.wii.mac})", state)
-
-          updated_state = %{state | metadata: %{state.metadata | game_settings: game_settings}}
-
-          process_replay_event(remaining, updated_state)
-        catch
-          :error, reason ->
-            ConnLogger.error("Error parsing game start data: #{inspect(reason)}", state)
-            {:error, :game_start_parsing_error}
-        end
-
-      _ ->
-        ConnLogger.error(
-          "Insufficient data for command 0x36 payload, expected size: #{payload_size}",
-          state
-        )
-
-        {:error, :insufficient_data}
-    end
-  end
-
-  # Fallback for 0x36 when the payload size is not available
-  def process_replay_event(<<0x36, _rest::binary>>, state) do
-    ConnLogger.warning("Received 0x36 command but no payload size is defined in state", state)
-    {:error, :no_payload_size}
-  end
-
-  # Generic pattern matcher for commands with known payload sizes
-  def process_replay_event(<<command, rest::binary>>, state)
-      when is_map_key(state.payload_sizes, command) do
-    payload_size = state.payload_sizes[command]
-
-    case rest do
-      <<payload::binary-size(payload_size), remaining::binary>> ->
-        ConnLogger.debug(
-          "Command 0x#{Integer.to_string(command, 16)} payload: #{inspect(payload, limit: 20, base: :hex)}",
-          state
-        )
-
-        # Process the specific command payload here
-        # ...
-
-        # Continue processing any remaining data
-        process_replay_event(remaining, state)
-
-      _ ->
-        ConnLogger.warning(
-          "Insufficient data for command 0x#{Integer.to_string(command, 16)} payload, expected size: #{payload_size}",
-          state
-        )
-
-        {:error, :insufficient_data}
-    end
-  end
-
-  def process_replay_event(<<command, rest::binary>>, state) do
-    ConnLogger.warning(
-      "Received unknown command: 0x#{Integer.to_string(command, 16)} with a payload size of #{byte_size(rest)}",
-      state
-    )
-
+      ) do
     {:ok, state, rest}
   end
 
-  def process_replay_event(<<>>, state) do
-    ConnLogger.warning("Received empty command", state)
+  def process_replay_event_data(<<>>, state) do
     {:ok, state, <<>>}
+  end
+
+  def process_replay_event_data(
+        <<0x35, payload_len::unsigned-integer-size(8), payload::binary>> = data,
+        state
+      )
+      when payload_len > 0 and byte_size(payload) >= payload_len - 1 do
+    <<payload::binary-size(payload_len - 1), rest::binary>> = payload
+
+    Logger.debug(
+      "Processing message sizes event. expected size: #{payload_len}, actual payload size: #{byte_size(payload)}, total size: #{byte_size(data)}"
+    )
+
+    try do
+      payload_sizes =
+        Slippi.Connection.MessageSizesParser.process_message_sizes(payload, payload_len)
+
+      ConnLogger.debug("Payload sizes: #{inspect(payload_sizes)}")
+      updated_state = %{state | payload_sizes: payload_sizes}
+      process_replay_event_data(rest, updated_state)
+    catch
+      error ->
+        ConnLogger.error("Error processing message sizes event: #{inspect(error)}")
+        {:error, :message_sizes_parsing_error}
+    end
+  end
+
+  def process_replay_event_data(
+        <<command::unsigned-integer-size(8), payload::binary>> = data,
+        state
+      )
+      when is_map_key(state.payload_sizes, command) and byte_size(payload) > 0 do
+    payload_len = state.payload_sizes[command]
+
+    if byte_size(data) < payload_len do
+      Logger.debug(
+        "Not enough data to process command: #{command} (expected size: #{payload_len}, actual size: #{byte_size(data)})"
+      )
+
+      {:ok, state, data}
+    end
+
+    <<payload::binary-size(payload_len), rest::binary>> = payload
+    {:ok, updated_state} = process_replay_event(<<command, payload::binary>>, state)
+    process_replay_event_data(rest, updated_state)
+  end
+
+  def process_replay_event_data(
+        <<command::unsigned-integer-size(8), payload::binary>> = rest,
+        state
+      ) do
+    ConnLogger.warning("Command not found: #{command} (payload size: #{byte_size(payload)})")
+    ConnLogger.warning("Rest: #{inspect(rest)}")
+    {:ok, state, rest}
+  end
+
+  @spec process_replay_event(binary(), ConsoleConnection.state()) ::
+          {:ok, ConsoleConnection.state()} | {:error, atom()}
+  def process_replay_event(
+        <<0x36, payload::binary>>,
+        state
+      ) do
+    # Parse player data from the game start payload
+    {:ok, game_settings} =
+      Slippi.Parser.MetadataParser.parse_game_start(<<0x36, payload::binary>>)
+
+    ConnLogger.info("New game started on stage #{game_settings.stage_id}")
+
+    updated_state = %{state | metadata: %{state.metadata | game_settings: game_settings}}
+
+    {:ok, updated_state}
+  end
+
+  def process_replay_event(
+        <<0x10, _payload::binary>> = event,
+        state
+      ) do
+    Logger.debug("Got message splitter. Size: #{byte_size(event)}")
+    {:ok, state}
+  end
+
+  def process_replay_event(
+        <<0x39, _payload::binary>>,
+        state
+      ) do
+    ConnLogger.info("Game ended")
+    {:ok, state}
+  end
+
+  def process_replay_event(
+        <<_command::unsigned-integer-size(8), _payload::binary>>,
+        state
+      ) do
+    {:ok, state}
   end
 end
 

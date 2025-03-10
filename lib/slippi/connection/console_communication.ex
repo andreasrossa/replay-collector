@@ -12,8 +12,6 @@ defmodule Slippi.ConsoleCommunication do
     keep_alive: 3
   }
 
-  @network_message "HELO\0"
-
   defmodule Message do
     @type t :: %__MODULE__{
             type: integer(),
@@ -76,13 +74,6 @@ defmodule Slippi.ConsoleCommunication do
   defp process_messages(buffer, messages) when byte_size(buffer) < 4 do
     # If the buffer is less than 4 bytes, we don't have a complete message
     {Enum.reverse(messages), buffer}
-  end
-
-  # Handles network keep alive messages starting with "HELO\\0".
-  # Skips over the keep alive message and continues processing the rest of the buffer.
-  @spec process_messages(binary(), [Message.t()]) :: {[Message.t()], binary()}
-  defp process_messages(<<@network_message, rest::binary>>, messages) do
-    process_messages(rest, messages)
   end
 
   # Handles incomplete messages where the buffer is smaller than the indicated message size.

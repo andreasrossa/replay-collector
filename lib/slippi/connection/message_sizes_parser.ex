@@ -18,8 +18,6 @@ defmodule Slippi.Connection.MessageSizesParser do
 
   def process_message_size_chunk(_binary, remaining, acc) when remaining < 0 do
     Logger.error("Remaining bytes is less than 0: #{remaining}\nacc: #{inspect(acc)}")
-    # exit program
-    System.halt(1)
   end
 
   # Process a chunk of the message size information

@@ -98,6 +98,7 @@ defmodule Slippi.ConsoleConnection do
   def init(wii_console) do
     ConnLogger.debug("Starting console connection")
 
+    ConnLogger.set_wii_context(wii_console)
     # lookup if the console is already connected. return :already_connected if it is.
     case Registry.lookup(Collector.WiiRegistry, wii_console.mac) do
       [{_pid, %{connection: connection}}] ->
