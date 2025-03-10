@@ -17,11 +17,19 @@ defmodule Slippi.ConsoleConnection do
           client_token: integer()
         }
 
+  @type player :: %{
+          names: %{
+            netplay: String.t() | nil,
+            code: String.t() | nil
+          },
+          character_usage: %{integer() => non_neg_integer()}
+        }
+
   @type metadata :: %{
-          consoleNickname: String.t() | nil,
-          startTime: DateTime.t() | nil,
-          lastFrame: integer() | nil,
-          game_settings: map() | nil
+          console_nickname: String.t(),
+          start_time: DateTime.t(),
+          last_frame: integer(),
+          players: %{integer() => player()}
         }
 
   @type command :: byte()
@@ -34,7 +42,8 @@ defmodule Slippi.ConsoleConnection do
           payload_sizes: payload_sizes() | nil,
           split_message_buffer: binary() | nil,
           connection_details: connection_details() | nil,
-          metadata: metadata()
+          metadata: metadata(),
+          file_manager: pid() | nil
         }
 
   ##############
@@ -123,12 +132,13 @@ defmodule Slippi.ConsoleConnection do
                payload_sizes: nil,
                split_message_buffer: nil,
                metadata: %{
-                 consoleNickname: nil,
-                 startTime: nil,
-                 lastFrame: nil,
-                 game_settings: nil
+                 console_nickname: wii_console.nickname,
+                 start_time: DateTime.utc_now(),
+                 last_frame: -124,
+                 players: %{}
                },
-               connection_details: initial_connection_details
+               connection_details: initial_connection_details,
+               file_manager: nil
              }}
 
           {:error, reason} ->

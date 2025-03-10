@@ -10,7 +10,8 @@ defmodule Collector.Supervisor do
     children = [
       {Registry, keys: :unique, name: Collector.WiiRegistry},
       {DynamicSupervisor, name: Collector.WiiConnectionSupervisor, strategy: :one_for_one},
-      Slippi.ConnectionScanner
+      Slippi.ConnectionScanner,
+      {Task.Supervisor, name: Slippi.TaskSupervisor}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

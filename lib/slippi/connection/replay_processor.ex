@@ -70,15 +70,15 @@ defmodule Slippi.Connection.ReplayProcessor do
   """
   @spec process_replay_event_data(binary(), ConsoleConnection.state()) ::
           {:ok, ConsoleConnection.state(), binary()} | {:error, atom()}
+  def process_replay_event_data(<<>>, state) do
+    {:ok, state, <<>>}
+  end
+
   def process_replay_event_data(
         <<@network_message, rest::binary>>,
         state
       ) do
     {:ok, state, rest}
-  end
-
-  def process_replay_event_data(<<>>, state) do
-    {:ok, state, <<>>}
   end
 
   def process_replay_event_data(
@@ -93,11 +93,22 @@ defmodule Slippi.Connection.ReplayProcessor do
     )
 
     try do
+      {:ok, file_manager} =
+        Slippi.ReplayFileManager.start_link(%{
+          console_nickname: state.wii.nickname,
+          start_time: DateTime.utc_now()
+        })
+
+      event_data =
+        <<0x35, payload_len::unsigned-integer-size(8), payload::binary-size(payload_len - 1)>>
+
+      Slippi.ReplayFileManager.write_event(file_manager, event_data)
+
       payload_sizes =
         Slippi.Connection.MessageSizesParser.process_message_sizes(payload, payload_len)
 
       ConnLogger.debug("Payload sizes: #{inspect(payload_sizes)}")
-      updated_state = %{state | payload_sizes: payload_sizes}
+      updated_state = %{state | payload_sizes: payload_sizes, file_manager: file_manager}
       process_replay_event_data(rest, updated_state)
     catch
       error ->
@@ -121,8 +132,16 @@ defmodule Slippi.Connection.ReplayProcessor do
       {:ok, state, data}
     end
 
+    # Extract the payload and rest of the data
     <<payload::binary-size(payload_len), rest::binary>> = payload
-    {:ok, updated_state} = process_replay_event(<<command, payload::binary>>, state)
+    event_data = <<command>> <> payload
+
+    if state.file_manager do
+      Slippi.ReplayFileManager.write_event(state.file_manager, event_data)
+    end
+
+    {:ok, updated_state} = process_replay_event(event_data, state)
+
     process_replay_event_data(rest, updated_state)
   end
 
@@ -138,21 +157,6 @@ defmodule Slippi.Connection.ReplayProcessor do
   @spec process_replay_event(binary(), ConsoleConnection.state()) ::
           {:ok, ConsoleConnection.state()} | {:error, atom()}
   def process_replay_event(
-        <<0x36, payload::binary>>,
-        state
-      ) do
-    # Parse player data from the game start payload
-    {:ok, game_settings} =
-      Slippi.Parser.MetadataParser.parse_game_start(<<0x36, payload::binary>>)
-
-    ConnLogger.info("New game started on stage #{game_settings.stage_id}")
-
-    updated_state = %{state | metadata: %{state.metadata | game_settings: game_settings}}
-
-    {:ok, updated_state}
-  end
-
-  def process_replay_event(
         <<0x10, _payload::binary>> = event,
         state
       ) do
@@ -161,10 +165,77 @@ defmodule Slippi.Connection.ReplayProcessor do
   end
 
   def process_replay_event(
+        <<0x36, payload::binary>>,
+        state
+      ) do
+    # Parse player data from the game start payload
+    %{players: players, stage_id: stage_id} =
+      Slippi.Parser.MessageParser.parse_message(<<0x36, payload::binary>>)
+
+    players =
+      players
+      |> Enum.filter(fn player -> player.type != 3 end)
+      |> Enum.map(fn player ->
+        {player.player_index,
+         %{
+           character_usage: %{},
+           names: %{
+             netplay: player.display_name,
+             code: player.connect_code
+           }
+         }}
+      end)
+      |> Map.new()
+
+    ConnLogger.info("New game started on stage #{stage_id}")
+
+    updated_state = %{state | metadata: %{state.metadata | players: players}}
+
+    {:ok, updated_state}
+  end
+
+  def process_replay_event(
+        <<0x38, payload::binary>>,
+        state
+      ) do
+    %{
+      frame: frame,
+      player_index: player_index,
+      is_follower: is_follower,
+      internal_character_id: internal_character_id
+    } =
+      Slippi.Parser.MessageParser.parse_message(<<0x38, payload::binary>>)
+
+    if is_follower do
+      {:ok, state}
+    else
+      prev_player = state.metadata.players[player_index]
+
+      updated_player =
+        prev_player
+        |> Map.update(:character_usage, %{internal_character_id => 1}, fn usage ->
+          Map.update(usage, internal_character_id, 1, &(&1 + 1))
+        end)
+
+      updated_players = Map.put(state.metadata.players, player_index, updated_player)
+
+      updated_state =
+        Map.put(state, :metadata, %{state.metadata | players: updated_players, last_frame: frame})
+
+      {:ok, updated_state}
+    end
+  end
+
+  def process_replay_event(
         <<0x39, _payload::binary>>,
         state
       ) do
-    ConnLogger.info("Game ended")
+    ConnLogger.info("Game ended! #{inspect(state.metadata)}")
+
+    if state.file_manager do
+      Slippi.ReplayFileManager.finalize(state.file_manager, state.metadata)
+    end
+
     {:ok, state}
   end
 
@@ -173,167 +244,5 @@ defmodule Slippi.Connection.ReplayProcessor do
         state
       ) do
     {:ok, state}
-  end
-end
-
-defmodule Slippi.Connection.PlayerParser do
-  @moduledoc """
-  Parses player data from Slippi replay game start payloads.
-  """
-
-  @doc """
-  Parses player data from the game start payload for a specific player index.
-  Returns nil if the player doesn't exist (port is 0).
-  """
-  @spec parse_player(binary(), integer()) :: map() | nil
-  def parse_player(payload, player_index) when player_index in 0..3 do
-    # Check if port is valid (not 0)
-    port_offset = 0x61 + player_index * 0x24
-    port = binary_part(payload, port_offset, 1) |> :binary.decode_unsigned()
-
-    if port == 0 do
-      nil
-    else
-      # Controller Fix parsing
-      cf_offset = player_index * 0x8
-      dashback = binary_part(payload, 0x141 + cf_offset, 4) |> :binary.decode_unsigned()
-      shield_drop = binary_part(payload, 0x145 + cf_offset, 4) |> :binary.decode_unsigned()
-
-      controller_fix =
-        cond do
-          dashback != shield_drop -> "Mixed"
-          dashback == 1 -> "UCF"
-          dashback == 2 -> "Dween"
-          true -> "None"
-        end
-
-      # Nametag parsing
-      nametag_length = 0x10
-      nametag_offset = player_index * nametag_length
-      nametag_start = 0x161 + nametag_offset
-      nametag_data = binary_part(payload, nametag_start, nametag_length)
-      # Convert Uint8Array to Buffer equivalent in Elixir
-      nametag = decode_shift_jis(nametag_data)
-
-      # Display name parsing
-      display_name_length = 0x10
-      display_name_offset = player_index * display_name_length
-      display_name_start = 0x1A1 + display_name_offset
-      display_name_data = binary_part(payload, display_name_start, display_name_length)
-      display_name = decode_shift_jis(display_name_data)
-
-      # Connect code parsing
-      connect_code_length = 0x10
-      connect_code_offset = player_index * connect_code_length
-      connect_code_start = 0x1E1 + connect_code_offset
-      connect_code_data = binary_part(payload, connect_code_start, connect_code_length)
-      connect_code = decode_shift_jis(connect_code_data)
-
-      # User ID parsing
-      user_id_length = 0x1F
-      user_id_offset = player_index * user_id_length
-      user_id_start = 0x221 + user_id_offset
-      user_id_data = binary_part(payload, user_id_start, user_id_length)
-      user_id = decode_utf8(user_id_data)
-
-      # Other player data
-      character_id =
-        binary_part(payload, 0x65 + player_index * 0x24, 1) |> :binary.decode_unsigned()
-
-      player_type =
-        binary_part(payload, 0x66 + player_index * 0x24, 1) |> :binary.decode_unsigned()
-
-      starting_stocks =
-        binary_part(payload, 0x67 + player_index * 0x24, 1) |> :binary.decode_unsigned()
-
-      costume_index =
-        binary_part(payload, 0x68 + player_index * 0x24, 1) |> :binary.decode_unsigned()
-
-      team_shade =
-        binary_part(payload, 0x6C + player_index * 0x24, 1) |> :binary.decode_unsigned()
-
-      handicap = binary_part(payload, 0x6D + player_index * 0x24, 1) |> :binary.decode_unsigned()
-      team_id = binary_part(payload, 0x6E + player_index * 0x24, 1) |> :binary.decode_unsigned()
-
-      # Construct player object
-      %{
-        port: port,
-        character_id: character_id,
-        player_type: player_type,
-        starting_stocks: starting_stocks,
-        costume_index: costume_index,
-        team_shade: team_shade,
-        handicap: handicap,
-        team_id: team_id,
-        controller_fix: controller_fix,
-        nametag: nametag,
-        display_name: display_name,
-        connect_code: connect_code,
-        user_id: user_id
-      }
-    end
-  end
-
-  @doc """
-  Decodes a binary string encoded with Shift-JIS, removing null terminators.
-  Similar to the iconv.decode + splitting by null in the TypeScript code.
-  """
-  def decode_shift_jis(binary) do
-    try do
-      # Convert binary to a list of bytes for processing
-      bytes = :binary.bin_to_list(binary)
-
-      # Find the first null terminator or take the whole string
-      null_pos = Enum.find_index(bytes, &(&1 == 0))
-      relevant_bytes = if null_pos, do: Enum.take(bytes, null_pos), else: bytes
-
-      # Convert back to binary for Codepagex processing
-      data = :binary.list_to_bin(relevant_bytes)
-
-      # Decode using Shift-JIS and convert to halfwidth if possible
-      case Codepagex.from_string(data, :"VENDORS/MICSFT/WINDOWS/CP932") do
-        {:ok, string} -> to_halfwidth(string)
-        _ -> ""
-      end
-    rescue
-      _ -> ""
-    end
-  end
-
-  @doc """
-  Decodes a binary string encoded with UTF-8, removing null terminators.
-  """
-  def decode_utf8(binary) do
-    try do
-      bytes = :binary.bin_to_list(binary)
-      null_pos = Enum.find_index(bytes, &(&1 == 0))
-      relevant_bytes = if null_pos, do: Enum.take(bytes, null_pos), else: bytes
-      data = :binary.list_to_bin(relevant_bytes)
-
-      case String.valid?(data) do
-        true -> data
-        false -> ""
-      end
-    rescue
-      _ -> ""
-    end
-  end
-
-  @doc """
-  Converts fullwidth characters to halfwidth when possible.
-  This is a simplified version of the toHalfwidth function in the TypeScript code.
-  You may need to expand this based on your specific requirements.
-  """
-  def to_halfwidth(string) do
-    # This is a simplified implementation
-    # You might want to add more conversions based on your needs
-    string
-    |> String.replace("！", "!")
-    |> String.replace("？", "?")
-    |> String.replace("：", ":")
-    |> String.replace("；", ";")
-    |> String.replace("，", ",")
-    |> String.replace("．", ".")
-    |> String.replace("　", " ")
   end
 end

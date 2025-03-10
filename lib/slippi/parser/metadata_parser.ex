@@ -5,6 +5,23 @@ defmodule Slippi.Parser.MetadataParser do
   import Bitwise
   require Logger
 
+  @type player :: %{
+          player_index: integer(),
+          port: integer(),
+          character_id: integer(),
+          player_type: integer(),
+          starting_stocks: integer(),
+          costume_index: integer(),
+          team_shade: integer(),
+          handicap: integer(),
+          team_id: integer(),
+          controller_fix: String.t(),
+          nametag: String.t(),
+          display_name: String.t(),
+          connect_code: String.t(),
+          user_id: String.t()
+        }
+
   @spec parse_game_start(binary()) :: {:ok, map()} | {:error, atom()}
   def parse_game_start(payload) do
     players =
@@ -139,7 +156,7 @@ defmodule Slippi.Parser.MetadataParser do
   Parses player data from the game start payload for a specific player index.
   Returns nil if the player doesn't exist (port is 0).
   """
-  @spec parse_player(binary(), integer()) :: map() | nil
+  @spec parse_player(binary(), integer()) :: player() | nil
   def parse_player(payload, player_index) when player_index in 0..3 do
     port = player_index + 1
 
@@ -205,6 +222,7 @@ defmodule Slippi.Parser.MetadataParser do
 
     # Construct player object
     %{
+      player_index: player_index,
       port: port,
       character_id: character_id,
       player_type: player_type,
