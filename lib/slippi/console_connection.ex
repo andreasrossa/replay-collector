@@ -43,8 +43,12 @@ defmodule Slippi.ConsoleConnection do
           split_message_buffer: binary() | nil,
           connection_details: connection_details() | nil,
           metadata: metadata(),
-          file_manager: pid() | nil
+          file_manager: pid() | nil,
+          connection_status: :disconnected | :connected | :connecting,
+          last_keepalive: integer() | nil
         }
+
+  @connection_timeout 30_000
 
   ##############
   # CLIENT API #
@@ -117,6 +121,9 @@ defmodule Slippi.ConsoleConnection do
       [] ->
         case Handler.connect(wii_console) do
           {:ok, socket} ->
+            # Initial timeout check
+            schedule_timeout_check()
+
             initial_connection_details = %{
               game_data_cursor: <<0, 0, 0, 0, 0, 0, 0, 0>>,
               version: "0.1.0",
@@ -138,7 +145,9 @@ defmodule Slippi.ConsoleConnection do
                  players: %{}
                },
                connection_details: initial_connection_details,
-               file_manager: nil
+               file_manager: nil,
+               connection_status: :connected,
+               last_keepalive: System.monotonic_time(:millisecond)
              }}
 
           {:error, reason} ->
@@ -181,7 +190,8 @@ defmodule Slippi.ConsoleConnection do
   def handle_info(
         {:tcp, _socket, data},
         %{buffer: buffer, message_buffer: message_buffer} = state
-      ) do
+      )
+      when is_binary(data) do
     {messages, new_buffer} = ConsoleCommunication.process_received_data(data, buffer)
 
     # Handle each decoded message and accumulate state changes
@@ -191,6 +201,7 @@ defmodule Slippi.ConsoleConnection do
         case message do
           %ConsoleCommunication.Message{type: type, payload: payload} ->
             case type do
+              # Handshake
               1 ->
                 # set metadata
                 new_state =
@@ -211,6 +222,7 @@ defmodule Slippi.ConsoleConnection do
 
                 {:cont, {:ok, new_state}}
 
+              # Replay messages
               2 ->
                 case ReplayProcessor.handle_replay_message(payload, acc_state, message_buffer) do
                   {:ok, new_state, new_message_buffer} ->
@@ -220,8 +232,9 @@ defmodule Slippi.ConsoleConnection do
                     {:halt, {:error, reason}}
                 end
 
+              # Keepalive
               3 ->
-                {:cont, {:ok, acc_state}}
+                {:cont, {:ok, %{acc_state | last_keepalive: System.monotonic_time(:millisecond)}}}
 
               _ ->
                 ConnLogger.warning("Unknown message type: #{type}")
@@ -249,7 +262,23 @@ defmodule Slippi.ConsoleConnection do
   @impl true
   def handle_info({:tcp_error, _socket, reason}, state) do
     ConnLogger.error("TCP error: #{inspect(reason)}")
+    Handler.close(state.socket)
     {:stop, :normal, state}
+  end
+
+  @impl true
+  def handle_info(:check_timeout, state) when state.connection_status == :connected do
+    current_time = System.monotonic_time(:millisecond)
+    time_since_last_keepalive = current_time - state.last_keepalive
+
+    if time_since_last_keepalive > @connection_timeout do
+      ConnLogger.warning("Connection timeout")
+      Handler.close(state.socket)
+      {:stop, :timeout, state}
+    else
+      schedule_timeout_check()
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -257,5 +286,11 @@ defmodule Slippi.ConsoleConnection do
     Handler.close(state.socket)
     ConnLogger.debug("Terminating connection: #{inspect(state)}")
     :ok
+  end
+
+  # Helper function to schedule the timeout check
+  defp schedule_timeout_check do
+    # Check every 5 seconds (or adjust as needed)
+    Process.send_after(self(), :check_timeout, 5_000)
   end
 end

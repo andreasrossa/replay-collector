@@ -1,5 +1,5 @@
 defmodule Slippi.ReplayFileManager do
-  use GenServer
+  use GenServer, :temporary
   require Logger
   alias Slippi.Connection.Logger, as: ConnLogger
 
@@ -18,7 +18,7 @@ defmodule Slippi.ReplayFileManager do
   end
 
   def finalize(pid, metadata) do
-    GenServer.cast(pid, {:finalize, metadata})
+    GenServer.call(pid, {:finalize, metadata})
   end
 
   # Server
@@ -37,15 +37,12 @@ defmodule Slippi.ReplayFileManager do
   end
 
   @impl true
-  def handle_cast({:finalize, metadata}, state) do
+  def handle_call({:finalize, metadata}, _from, state) do
     ConnLogger.info("Finalizing replay file: #{state.file_path}")
 
-    Task.Supervisor.start_child(
-      Slippi.TaskSupervisor,
-      fn -> post_process_replay_file(state.file_path, metadata) end
-    )
+    :ok = post_process_replay_file(state.file_path, metadata)
 
-    {:stop, :normal, state}
+    {:stop, :normal, {:ok, state.file_path}, state}
   end
 
   @impl true

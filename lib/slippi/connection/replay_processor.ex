@@ -233,7 +233,8 @@ defmodule Slippi.Connection.ReplayProcessor do
     ConnLogger.info("Game ended! #{inspect(state.metadata)}")
 
     if state.file_manager do
-      Slippi.ReplayFileManager.finalize(state.file_manager, state.metadata)
+      {:ok, file_path} = Slippi.ReplayFileManager.finalize(state.file_manager, state.metadata)
+      Logger.info("File saved to #{file_path}")
     end
 
     {:ok, state}
