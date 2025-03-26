@@ -22,7 +22,10 @@ defmodule WiiScanner.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:codepagex, "~> 0.1.6"}
+      {:codepagex, "~> 0.1.6"},
+      {:redix, "~> 1.2"},
+      {:jason, "~> 1.4"},
+      {:httpoison, "~> 2.0"}
     ]
   end
 end

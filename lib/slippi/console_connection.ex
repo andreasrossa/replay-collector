@@ -48,8 +48,6 @@ defmodule Slippi.ConsoleConnection do
           last_keepalive: integer() | nil
         }
 
-  @connection_timeout 30_000
-
   ##############
   # CLIENT API #
   ##############
@@ -121,9 +119,6 @@ defmodule Slippi.ConsoleConnection do
       [] ->
         case Handler.connect(wii_console) do
           {:ok, socket} ->
-            # Initial timeout check
-            schedule_timeout_check()
-
             initial_connection_details = %{
               game_data_cursor: <<0, 0, 0, 0, 0, 0, 0, 0>>,
               version: "0.1.0",
@@ -267,30 +262,9 @@ defmodule Slippi.ConsoleConnection do
   end
 
   @impl true
-  def handle_info(:check_timeout, state) when state.connection_status == :connected do
-    current_time = System.monotonic_time(:millisecond)
-    time_since_last_keepalive = current_time - state.last_keepalive
-
-    if time_since_last_keepalive > @connection_timeout do
-      ConnLogger.warning("Connection timeout")
-      Handler.close(state.socket)
-      {:stop, :timeout, state}
-    else
-      schedule_timeout_check()
-      {:noreply, state}
-    end
-  end
-
-  @impl true
   def terminate(_reason, state) do
     Handler.close(state.socket)
     ConnLogger.debug("Terminating connection: #{inspect(state)}")
     :ok
-  end
-
-  # Helper function to schedule the timeout check
-  defp schedule_timeout_check do
-    # Check every 5 seconds (or adjust as needed)
-    Process.send_after(self(), :check_timeout, 5_000)
   end
 end

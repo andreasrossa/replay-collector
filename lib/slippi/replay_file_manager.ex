@@ -58,7 +58,7 @@ defmodule Slippi.ReplayFileManager do
     nickname = opts.console_nickname |> String.replace(~r/[^a-zA-Z0-9_-]/, "_")
     replay_dir = Application.get_env(:collector, :replay_directory, "replays")
     File.mkdir_p!(replay_dir)
-    path = Path.join(replay_dir, "#{nickname}_#{timestamp}.bin")
+    path = Path.join(replay_dir, "#{nickname}_#{timestamp}.slp")
     :ok = File.write!(path, get_file_header(), [:binary])
     path
   end

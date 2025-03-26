@@ -107,7 +107,6 @@ defmodule Slippi.Connection.ReplayProcessor do
       payload_sizes =
         Slippi.Connection.MessageSizesParser.process_message_sizes(payload, payload_len)
 
-      ConnLogger.debug("Payload sizes: #{inspect(payload_sizes)}")
       updated_state = %{state | payload_sizes: payload_sizes, file_manager: file_manager}
       process_replay_event_data(rest, updated_state)
     catch
@@ -160,7 +159,6 @@ defmodule Slippi.Connection.ReplayProcessor do
         <<0x10, _payload::binary>> = event,
         state
       ) do
-    Logger.debug("Got message splitter. Size: #{byte_size(event)}")
     {:ok, state}
   end
 
@@ -172,7 +170,7 @@ defmodule Slippi.Connection.ReplayProcessor do
     %{players: players, stage_id: stage_id} =
       Slippi.Parser.MessageParser.parse_message(<<0x36, payload::binary>>)
 
-    players =
+    player_state =
       players
       |> Enum.filter(fn player -> player.type != 3 end)
       |> Enum.map(fn player ->
@@ -187,9 +185,21 @@ defmodule Slippi.Connection.ReplayProcessor do
       end)
       |> Map.new()
 
+    characters =
+      players
+      |> Enum.filter(fn player -> player.type != 3 end)
+      |> Enum.map(fn player -> player.character_id end)
+
+    APICommunication.post_replay_started_event(%{
+      startedAt: System.system_time(:millisecond),
+      characterIds: characters,
+      stageId: stage_id,
+      console: state.wii
+    })
+
     ConnLogger.info("New game started on stage #{stage_id}")
 
-    updated_state = %{state | metadata: %{state.metadata | players: players}}
+    updated_state = %{state | metadata: %{state.metadata | players: player_state}}
 
     {:ok, updated_state}
   end
@@ -237,6 +247,7 @@ defmodule Slippi.Connection.ReplayProcessor do
       Logger.info("File saved to #{file_path}")
     end
 
+    # TODO: Post replay ended event with metadata and file
     {:ok, state}
   end
 
