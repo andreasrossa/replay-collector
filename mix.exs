@@ -25,7 +25,8 @@ defmodule WiiScanner.MixProject do
       {:codepagex, "~> 0.1.6"},
       {:redix, "~> 1.2"},
       {:jason, "~> 1.4"},
-      {:httpoison, "~> 2.0"}
+      {:httpoison, "~> 2.0"},
+      {:dotenvy, "~> 0.8.0"}
     ]
   end
 end

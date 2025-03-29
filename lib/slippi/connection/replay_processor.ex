@@ -242,13 +242,23 @@ defmodule Slippi.Connection.ReplayProcessor do
       ) do
     ConnLogger.info("Game ended! #{inspect(state.metadata)}")
 
-    if state.file_manager do
+    # TODO: Handle case where file manager is not found
+    if is_nil(state.file_manager) do
+      ConnLogger.warning("No file manager found for replay #{state.metadata.replay_id}")
+      {:ok, state}
+    else
       {:ok, file_path} = Slippi.ReplayFileManager.finalize(state.file_manager, state.metadata)
       Logger.info("File saved to #{file_path}")
-    end
 
-    # TODO: Post replay ended event with metadata and file
-    {:ok, state}
+      # TODO: Post replay ended event with metadata and file
+      APICommunication.post_replay_ended_event(%{
+        endedAt: System.system_time(:millisecond),
+        metadata: state.metadata,
+        path: file_path
+      })
+
+      {:ok, state}
+    end
   end
 
   def process_replay_event(
