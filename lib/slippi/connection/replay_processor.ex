@@ -82,15 +82,11 @@ defmodule Slippi.Connection.ReplayProcessor do
   end
 
   def process_replay_event_data(
-        <<0x35, payload_len::unsigned-integer-size(8), payload::binary>> = data,
+        <<0x35, payload_len::unsigned-integer-size(8), payload::binary>>,
         state
       )
       when payload_len > 0 and byte_size(payload) >= payload_len - 1 do
     <<payload::binary-size(payload_len - 1), rest::binary>> = payload
-
-    Logger.debug(
-      "Processing message sizes event. expected size: #{payload_len}, actual payload size: #{byte_size(payload)}, total size: #{byte_size(data)}"
-    )
 
     try do
       {:ok, file_manager} =
@@ -156,7 +152,7 @@ defmodule Slippi.Connection.ReplayProcessor do
   @spec process_replay_event(binary(), ConsoleConnection.state()) ::
           {:ok, ConsoleConnection.state()} | {:error, atom()}
   def process_replay_event(
-        <<0x10, _payload::binary>> = event,
+        <<0x10, _payload::binary>>,
         state
       ) do
     {:ok, state}
@@ -190,14 +186,16 @@ defmodule Slippi.Connection.ReplayProcessor do
       |> Enum.filter(fn player -> player.type != 3 end)
       |> Enum.map(fn player -> player.character_id end)
 
-    APICommunication.post_replay_started_event(%{
-      startedAt: System.system_time(:millisecond),
-      characterIds: characters,
-      stageId: stage_id,
-      console: state.wii
-    })
+    {:ok, id} =
+      Collector.Services.APICommunication.game_started(%{
+        startedAt: System.system_time(:millisecond),
+        characterIds: characters,
+        stageId: stage_id,
+        console: state.wii
+      })
 
     ConnLogger.info("New game started on stage #{stage_id}")
+    ConnLogger.info("Game ID: #{id}")
 
     updated_state = %{state | metadata: %{state.metadata | players: player_state}}
 
@@ -251,9 +249,8 @@ defmodule Slippi.Connection.ReplayProcessor do
       Logger.info("File saved to #{file_path}")
 
       # TODO: Post replay ended event with metadata and file
-      APICommunication.post_replay_ended_event(%{
+      Collector.Services.APICommunication.game_ended(%{
         endedAt: System.system_time(:millisecond),
-        metadata: state.metadata,
         path: file_path
       })
 

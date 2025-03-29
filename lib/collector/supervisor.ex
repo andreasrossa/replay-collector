@@ -11,7 +11,8 @@ defmodule Collector.Supervisor do
       {Registry, keys: :unique, name: Collector.WiiRegistry},
       {DynamicSupervisor, name: Collector.WiiConnectionSupervisor, strategy: :one_for_one},
       # {Redix, name: :redix, host: "localhost", port: 6379},
-      Slippi.ConnectionScanner
+      Slippi.ConnectionScanner,
+      Collector.Services.APICommunication
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

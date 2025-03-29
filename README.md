@@ -1,21 +1,9 @@
-# UbjsonElixir
+# Replay Collector
+This apps discovers Wiis on the network, connects to them
+and records incoming Slippi Replays.
 
-**TODO: Add description**
-
-## Installation
-
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `ubjson_elixir` to your list of dependencies in `mix.exs`:
-
-```elixir
-def deps do
-  [
-    {:ubjson_elixir, "~> 0.1.0"}
-  ]
-end
-```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/ubjson_elixir>.
-
+## TODO
+- [ ] Implement Wii timeout
+    - [ ] Remove wii from registry on timeout
+- [ ] Turn replay processor into a GenServer
+- [ ] Implement retries for failing API requests
