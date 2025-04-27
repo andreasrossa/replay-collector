@@ -20,4 +20,9 @@ defmodule Collector.Config do
       url -> url
     end
   end
+
+  @spec replay_directory() :: String.t()
+  def replay_directory do
+    Application.get_env(:collector, :replay_directory, "./replays")
+  end
 end

@@ -1,4 +1,4 @@
-defmodule Slippi.Connection.Logger do
+defmodule Collector.Utils.ConsoleLogger do
   @moduledoc """
   Custom logger for Slippi connections using Logger metadata.
   """

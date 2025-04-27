@@ -1,4 +1,4 @@
-defmodule Slippi.ConsoleConnection do
+defmodule Collector.Workers.ConsoleConnection do
   @moduledoc """
   Manages TCP connection to a Wii console running Slippi.
   Handles connection establishment, message sending, and collecting replay data.
@@ -6,30 +6,15 @@ defmodule Slippi.ConsoleConnection do
 
   use GenServer
 
-  alias Slippi.ConsoleCommunication
-  alias Slippi.Connection.Handler
-  alias Slippi.Connection.ReplayProcessor
-  alias Slippi.Connection.Logger, as: ConnLogger
+  alias Collector.Workers.ConsoleConnection.Communication, as: ConsoleCommunication
+  alias Collector.Workers.ConsoleConnection.Handler
+  alias Collector.Workers.ReplayProcessor
+  alias Collector.Utils.ConsoleLogger, as: ConnLogger
 
   @type connection_details :: %{
           game_data_cursor: binary(),
           version: String.t(),
           client_token: integer()
-        }
-
-  @type player :: %{
-          names: %{
-            netplay: String.t() | nil,
-            code: String.t() | nil
-          },
-          character_usage: %{integer() => non_neg_integer()}
-        }
-
-  @type metadata :: %{
-          console_nickname: String.t(),
-          start_time: DateTime.t(),
-          last_frame: integer(),
-          players: %{integer() => player()}
         }
 
   @type command :: byte()
@@ -38,14 +23,11 @@ defmodule Slippi.ConsoleConnection do
           wii: Slippi.WiiConsole.t(),
           socket: :gen_tcp.socket() | nil,
           buffer: binary(),
-          message_buffer: binary(),
-          payload_sizes: payload_sizes() | nil,
-          split_message_buffer: binary() | nil,
-          connection_details: connection_details() | nil,
-          metadata: metadata(),
-          file_manager: pid() | nil,
+          replay_processor: pid(),
+          replay_processor_ref: reference(),
+          connection_details: connection_details(),
           connection_status: :disconnected | :connected | :connecting,
-          last_keepalive: integer() | nil
+          last_keepalive: integer()
         }
 
   ##############
@@ -65,19 +47,6 @@ defmodule Slippi.ConsoleConnection do
           {:ok, pid()} | {:error, {:already_connected, pid()} | term()}
   def start_link(wii_console) do
     GenServer.start_link(__MODULE__, wii_console)
-  end
-
-  @doc """
-  Sends a message to the console.
-  ## Parameters
-  - `pid`: The PID of the console connection.
-  - `message`: The message to send.
-  ## Returns
-  - `:ok`: If the message is sent successfully.
-  """
-  @spec send_message(atom() | pid() | {atom(), any()} | {:via, atom(), any()}, any()) :: :ok
-  def send_message(pid, message) do
-    GenServer.cast(pid, {:send_message, message})
   end
 
   @doc """
@@ -112,9 +81,9 @@ defmodule Slippi.ConsoleConnection do
     ConnLogger.set_wii_context(wii_console)
     # lookup if the console is already connected. return :already_connected if it is.
     case Registry.lookup(Collector.WiiRegistry, wii_console.mac) do
-      [{_pid, %{connection: connection}}] ->
+      [{_pid, _state}] ->
         ConnLogger.warning("Console already connected: #{wii_console.nickname}")
-        {:error, {:already_connected, connection}}
+        {:stop, :already_connected}
 
       [] ->
         case Handler.connect(wii_console) do
@@ -125,24 +94,20 @@ defmodule Slippi.ConsoleConnection do
               client_token: 0
             }
 
+            # create a new replay processor
+            {:ok, replay_processor} = ReplayProcessor.start_link(wii_console)
+            replay_processor_ref = Process.monitor(replay_processor)
+
             {:ok,
              %{
                wii: wii_console,
                socket: socket,
                buffer: <<>>,
-               message_buffer: <<>>,
-               payload_sizes: nil,
-               split_message_buffer: nil,
-               metadata: %{
-                 console_nickname: wii_console.nickname,
-                 start_time: DateTime.utc_now(),
-                 last_frame: -124,
-                 players: %{}
-               },
+               replay_processor: replay_processor,
                connection_details: initial_connection_details,
-               file_manager: nil,
                connection_status: :connected,
-               last_keepalive: System.monotonic_time(:millisecond)
+               last_message_time: System.system_time(:millisecond),
+               replay_processor_ref: replay_processor_ref
              }}
 
           {:error, reason} ->
@@ -150,26 +115,6 @@ defmodule Slippi.ConsoleConnection do
             {:error, reason}
         end
     end
-  end
-
-  @impl true
-  @spec handle_cast({:send_message, binary()}, state :: state()) :: {:noreply, state()}
-  def handle_cast({:send_message, message}, %{socket: socket} = state) when not is_nil(socket) do
-    case Handler.send_message(socket, message) do
-      :ok ->
-        ConnLogger.debug("Sent message to Wii: #{inspect(message)}")
-        {:noreply, state}
-
-      {:error, reason} ->
-        ConnLogger.error("Failed to send message: #{inspect(reason)}")
-        {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_cast({:send_message, _message}, state) do
-    ConnLogger.warning("Attempted to send message while disconnected")
-    {:noreply, state}
   end
 
   @impl true
@@ -184,7 +129,7 @@ defmodule Slippi.ConsoleConnection do
   @spec handle_info({:tcp, :gen_tcp.socket(), binary()}, state :: state()) :: {:noreply, state()}
   def handle_info(
         {:tcp, _socket, data},
-        %{buffer: buffer, message_buffer: message_buffer} = state
+        %{buffer: buffer} = state
       )
       when is_binary(data) do
     {messages, new_buffer} = ConsoleCommunication.process_received_data(data, buffer)
@@ -198,38 +143,21 @@ defmodule Slippi.ConsoleConnection do
             case type do
               # Handshake
               1 ->
-                # set metadata
-                new_state =
-                  put_in(acc_state.connection_details.version, payload["nintendontVersion"])
-
-                client_token = :binary.list_to_bin(payload["clientToken"])
-                client_token = :binary.decode_unsigned(client_token, :big)
-
-                new_state =
-                  put_in(new_state.connection_details.client_token, client_token)
-
-                # set game data cursor
-                new_state =
-                  put_in(
-                    new_state.connection_details.game_data_cursor,
-                    :binary.list_to_bin(payload["pos"])
-                  )
-
-                {:cont, {:ok, new_state}}
+                case handle_handshake_message(payload, acc_state) do
+                  {:ok, new_state} ->
+                    {:cont, {:ok, new_state}}
+                end
 
               # Replay messages
               2 ->
-                case ReplayProcessor.handle_replay_message(payload, acc_state, message_buffer) do
-                  {:ok, new_state, new_message_buffer} ->
-                    {:cont, {:ok, %{new_state | message_buffer: new_message_buffer}}}
-
-                  {:error, reason} ->
-                    {:halt, {:error, reason}}
+                case handle_replay_message(payload, acc_state) do
+                  {:ok, new_state} ->
+                    {:cont, {:ok, new_state}}
                 end
 
               # Keepalive
               3 ->
-                {:cont, {:ok, %{acc_state | last_keepalive: System.monotonic_time(:millisecond)}}}
+                {:cont, {:ok, handle_keepalive_message(acc_state)}}
 
               _ ->
                 ConnLogger.warning("Unknown message type: #{type}")
@@ -262,9 +190,58 @@ defmodule Slippi.ConsoleConnection do
   end
 
   @impl true
+  def handle_info({:DOWN, ref, :process, _pid, :normal}, %{replay_processor_ref: ref} = state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{replay_processor_ref: ref} = state) do
+    ConnLogger.warning("Replay processor crashed: #{inspect(reason)}")
+
+    # restart replay processor
+    {:ok, replay_processor} = ReplayProcessor.start_link(state.wii)
+    replay_processor_ref = Process.monitor(replay_processor)
+
+    {:noreply,
+     %{state | replay_processor: replay_processor, replay_processor_ref: replay_processor_ref}}
+  end
+
+  @impl true
   def terminate(_reason, state) do
+    ConnLogger.info("Terminating connection: #{inspect(state)}")
     Handler.close(state.socket)
-    ConnLogger.debug("Terminating connection: #{inspect(state)}")
     :ok
+  end
+
+  defp handle_handshake_message(payload, state) do
+    new_state =
+      put_in(state.connection_details.version, payload["nintendontVersion"])
+
+    client_token = :binary.list_to_bin(payload["clientToken"])
+    client_token = :binary.decode_unsigned(client_token, :big)
+
+    new_state =
+      put_in(new_state.connection_details.client_token, client_token)
+
+    # set game data cursor
+    new_state =
+      put_in(
+        new_state.connection_details.game_data_cursor,
+        :binary.list_to_bin(payload["pos"])
+      )
+
+    ConnLogger.debug("Handshake message received: #{inspect(new_state)}")
+
+    {:ok, new_state}
+  end
+
+  defp handle_replay_message(payload, state) do
+    ReplayProcessor.process_message(state.replay_processor, payload)
+
+    {:ok, %{state | last_message_time: System.system_time(:millisecond)}}
+  end
+
+  defp handle_keepalive_message(state) do
+    %{state | last_message_time: System.system_time(:millisecond)}
   end
 end

@@ -23,11 +23,11 @@ defmodule Slippi.ConnectionScanner do
            {:ip, {0, 0, 0, 0}}
          ]) do
       {:ok, socket} ->
-        Logger.info("Opened UDP socket for connection scanning")
+        Logger.info("Scanning for Wii consoles on port :#{@discovery_port}")
         {:ok, %{socket: socket}}
 
       {:error, reason} ->
-        Logger.error("Failed to open UDP socket: #{inspect(reason)}")
+        Logger.error("Failed to open UDP socket for console discovery: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -99,7 +99,7 @@ defmodule Slippi.ConnectionScanner do
         {:ok, connection} =
           DynamicSupervisor.start_child(
             Collector.WiiConnectionSupervisor,
-            {Slippi.ConsoleConnection, console}
+            {Collector.Workers.ConsoleConnection, console}
           )
 
         Registry.register(Collector.WiiRegistry, console.mac, %{

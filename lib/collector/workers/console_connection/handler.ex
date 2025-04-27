@@ -1,9 +1,9 @@
-defmodule Slippi.Connection.Handler do
+defmodule Collector.Workers.ConsoleConnection.Handler do
   @moduledoc """
   Handles TCP connection establishment and management for Slippi consoles.
   """
   require Logger
-  alias Slippi.ConsoleCommunication
+  alias Collector.Workers.ConsoleConnection.Communication, as: ConsoleCommunication
 
   @default_port 51441
 

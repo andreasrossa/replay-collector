@@ -1,4 +1,4 @@
-defmodule Slippi.ConsoleCommunication do
+defmodule Collector.Workers.ConsoleConnection.Communication do
   require Logger
 
   @moduledoc """
