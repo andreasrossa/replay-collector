@@ -30,7 +30,7 @@ defmodule Collector.Workers.ReplayProcessor do
           start_time: non_neg_integer(),
           file_manager: pid(),
           file_manager_ref: reference(),
-          game_info: game_info()
+          game_info: game_info() | nil
         }
 
   ##############
@@ -52,20 +52,15 @@ defmodule Collector.Workers.ReplayProcessor do
   ####################
   @impl true
   @spec init({WiiConsole.t(), binary(), binary()}) :: {:ok, state()} | {:error, any()}
-  def init({wii_console, payload_sizes_event, game_start_event}) do
+  def init({wii_console}) do
     start_time = System.system_time(:millisecond)
 
     ConnLogger.set_wii_context(wii_console)
-
-    {:ok, game_info} = parse_game_start_event(game_start_event)
 
     # Start the file handler here with initial state
     {:ok, file_manager} = FileHandler.start_link({start_time, wii_console.nickname})
 
     file_manager_ref = Process.monitor(file_manager)
-
-    FileHandler.write_event(file_manager, payload_sizes_event)
-    FileHandler.write_event(file_manager, game_start_event)
 
     {:ok,
      %{
@@ -74,7 +69,7 @@ defmodule Collector.Workers.ReplayProcessor do
        start_time: start_time,
        file_manager: file_manager,
        file_manager_ref: file_manager_ref,
-       game_info: game_info
+       game_info: nil
      }}
   end
 
@@ -102,79 +97,13 @@ defmodule Collector.Workers.ReplayProcessor do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, :normal}, %{file_manager_ref: ref} = state) do
-    ConnLogger.warning("File handler process stopped: #{inspect(reason)}")
-    {:noreply, state}
-  end
-
-  @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{file_manager_ref: ref} = state) do
     ConnLogger.warning("File handler process crashed: #{inspect(reason)}")
     {:stop, :file_handler_crash, state}
   end
 
-  @impl true
-  def handle_info(msg, state) do
-    ConnLogger.warning("Unhandled message: #{inspect(msg)}")
-    {:noreply, state}
-  end
-
-  def handle_replay_event(<<0x38, payload::binary>>, state) do
-    case PostFrameUpdateParser.parse_post_frame_update(payload) do
-      {:ok,
-       %{
-         frame: frame,
-         player_index: player_index,
-         is_follower: is_follower,
-         internal_character_id: internal_character_id
-       }} ->
-        if is_follower do
-          {:ok, state}
-        else
-          player = state.game_info.players[player_index]
-
-          updated_player =
-            player
-            |> Map.update(:character_usage, %{internal_character_id => 1}, fn usage ->
-              Map.update(usage, internal_character_id, 1, &(&1 + 1))
-            end)
-
-          updated_players = Map.put(state.game_info.players, player_index, updated_player)
-
-          updated_state =
-            Map.put(state, :game_info, %{
-              state.game_info
-              | players: updated_players,
-                last_frame: frame
-            })
-
-          {:ok, updated_state}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  def handle_replay_event(<<0x39, payload::binary>>, state) do
-    case GameEndParser.parse_game_end(payload) do
-      {:ok, %{game_end_type: game_end_type, lras: lras}} ->
-        updated_state =
-          Map.put(state, :game_info, %{
-            state.game_info
-            | game_end_type: game_end_type,
-              lras: lras
-          })
-
-        {:game_ended, updated_state}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp parse_game_start_event(payload) do
-    case GameStartParser.parse_game_start(payload) do
+  def handle_replay_event(<<0x36, _payload::binary>> = event, state) do
+    case GameStartParser.parse_game_start(event) do
       {:ok, %{players: players, stage_id: stage_id}} ->
         player_state =
           players
@@ -202,11 +131,73 @@ defmodule Collector.Workers.ReplayProcessor do
           players: player_state
         }
 
-        {:ok, game_info}
+        {:ok, %{state | game_info: game_info}}
 
       {:error, reason} ->
         ConnLogger.debug("Error parsing game start: #{inspect(reason)}")
         {:error, reason}
     end
+  end
+
+  def handle_replay_event(<<0x38, _payload::binary>> = event, state) do
+    if state.game_info == nil do
+      {:error, :game_not_started}
+    else
+      case PostFrameUpdateParser.parse_post_frame_update(event) do
+        {:ok,
+         %{
+           frame: frame,
+           player_index: player_index,
+           is_follower: is_follower,
+           internal_character_id: internal_character_id
+         }} ->
+          if is_follower do
+            {:ok, state}
+          else
+            player = state.game_info.players[player_index]
+
+            updated_player =
+              player
+              |> Map.update(:character_usage, %{internal_character_id => 1}, fn usage ->
+                Map.update(usage, internal_character_id, 1, &(&1 + 1))
+              end)
+
+            updated_players = Map.put(state.game_info.players, player_index, updated_player)
+
+            updated_state =
+              Map.put(state, :game_info, %{
+                state.game_info
+                | players: updated_players,
+                  last_frame: frame
+              })
+
+            {:ok, updated_state}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  def handle_replay_event(<<0x39, payload::binary>>, state) do
+    case GameEndParser.parse_game_end(payload) do
+      {:ok, %{game_end_type: game_end_type, lras: lras}} ->
+        updated_state =
+          Map.put(state, :game_info, %{
+            state.game_info
+            | game_end_type: game_end_type,
+              lras: lras
+          })
+
+        {:game_ended, updated_state}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def handle_replay_event(event, state) do
+    {:ok, state}
   end
 end
