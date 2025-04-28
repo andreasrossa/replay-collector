@@ -72,7 +72,7 @@ defmodule Collector.Workers.FileHandler do
   end
 
   defp create_new_replay_file({start_time, console_nickname}) do
-    timestamp = DateTime.to_unix(start_time)
+    timestamp = start_time
     nickname = console_nickname |> String.replace(~r/[^a-zA-Z0-9_-]/, "_")
     replay_dir = Collector.Config.replay_directory()
 

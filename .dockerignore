@@ -1,0 +1,27 @@
+# Other
+/minio
+/replays
+
+# Elixir build artifacts
+/_build
+/deps
+/.elixir_ls
+/.elixir-tools
+/.lexical
+
+# Git files
+.git
+.gitignore
+
+# Docker files
+Dockerfile
+.dockerignore
+
+# Config/secrets (should be passed via ENV vars)
+/config/dev.exs
+/config/dev.secret.exs
+/config/test.exs
+/config/test.secret.exs
+
+# Other
+.DS_Store

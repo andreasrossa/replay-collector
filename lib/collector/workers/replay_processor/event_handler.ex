@@ -22,7 +22,6 @@ defmodule Collector.Workers.ReplayProcessor.EventHandler do
       ) do
     case PayloadSizesParser.parse_payload_sizes(payload) do
       {:ok, payload_sizes} ->
-        ConnLogger.debug("Payload sizes: #{inspect(payload_sizes)}")
         {:ok, Map.put(state, :payload_sizes, payload_sizes)}
 
       {:error, :remaining_bytes_less_than_zero} ->
@@ -77,7 +76,6 @@ defmodule Collector.Workers.ReplayProcessor.EventHandler do
         updated_state = Map.put(state, :game_info, game_info)
         updated_state = Map.put(updated_state, :status, :ongoing)
 
-        ConnLogger.debug("Game start event processed: #{inspect(updated_state)}")
         {:ok, updated_state}
 
       {:error, reason} ->
@@ -155,8 +153,6 @@ defmodule Collector.Workers.ReplayProcessor.EventHandler do
             | game_end_type: game_end_type,
               lras: lras
           })
-
-        ConnLogger.debug("Game Info: #{inspect(state.game_info)}")
 
         Collector.Workers.FileHandler.finalize(state.file_manager, %{
           start_time: state.game_info.start_time,

@@ -23,6 +23,9 @@ defmodule Collector.Config do
 
   @spec replay_directory() :: String.t()
   def replay_directory do
-    Application.get_env(:collector, :replay_directory, "./replays")
+    case Application.get_env(:collector, :replay_directory) do
+      nil -> raise "REPLAY_DIRECTORY environment variable is not set"
+      dir -> dir
+    end
   end
 end

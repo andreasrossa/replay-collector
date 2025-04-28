@@ -1,9 +1,10 @@
 defmodule Collector.Workers.ReplayProcessor do
-  alias Collector.Workers.ReplayProcessor.EventHandler
   alias Slippi.WiiConsole
   alias Collector.Utils.ConsoleLogger, as: ConnLogger
   alias Collector.Workers.FileHandler
-  alias Collector.Workers.ReplayProcessor.GameStartParser
+  alias Slippi.Parser.GameStartParser
+  alias Slippi.Parser.GameEndParser
+  alias Slippi.Parser.PostFrameUpdateParser
 
   @moduledoc """
   GenServer that processes incoming Slippi events.
@@ -37,9 +38,9 @@ defmodule Collector.Workers.ReplayProcessor do
   # CLIENT API #
   ##############
 
-  @spec start_link(WiiConsole.t(), binary(), binary()) :: {:ok, pid()} | {:error, any()}
-  def start_link({wii_console, payload_sizes_event, game_start_event}, opts \\ []) do
-    GenServer.start_link(__MODULE__, {wii_console, payload_sizes_event, game_start_event}, opts)
+  @spec start_link(WiiConsole.t()) :: {:ok, pid()} | {:error, any()}
+  def start_link(wii_console, opts \\ []) do
+    GenServer.start_link(__MODULE__, wii_console, opts)
   end
 
   @spec process_event(pid(), binary()) :: :ok
@@ -51,8 +52,8 @@ defmodule Collector.Workers.ReplayProcessor do
   # SERVER CALLBACKS #
   ####################
   @impl true
-  @spec init({WiiConsole.t(), binary(), binary()}) :: {:ok, state()} | {:error, any()}
-  def init({wii_console}) do
+  @spec init(WiiConsole.t()) :: {:ok, state()} | {:error, any()}
+  def init(wii_console) do
     start_time = System.system_time(:millisecond)
 
     ConnLogger.set_wii_context(wii_console)
@@ -83,7 +84,7 @@ defmodule Collector.Workers.ReplayProcessor do
 
       {:game_ended, updated_state} ->
         Collector.Workers.FileHandler.finalize(updated_state.file_manager, %{
-          start_time: updated_state.game_info.start_time,
+          start_time: updated_state.start_time,
           last_frame: updated_state.game_info.last_frame,
           players: updated_state.game_info.players,
           console_nickname: updated_state.wii_console.nickname
@@ -128,7 +129,10 @@ defmodule Collector.Workers.ReplayProcessor do
         game_info = %{
           stage_id: stage_id,
           characters: character_ids,
-          players: player_state
+          players: player_state,
+          last_frame: nil,
+          game_end_type: nil,
+          lras: nil
         }
 
         {:ok, %{state | game_info: game_info}}
@@ -190,6 +194,7 @@ defmodule Collector.Workers.ReplayProcessor do
               lras: lras
           })
 
+        ConnLogger.debug("Game ended. Game info: #{inspect(updated_state.game_info)}")
         {:game_ended, updated_state}
 
       {:error, reason} ->
@@ -197,7 +202,7 @@ defmodule Collector.Workers.ReplayProcessor do
     end
   end
 
-  def handle_replay_event(event, state) do
+  def handle_replay_event(_event, state) do
     {:ok, state}
   end
 end

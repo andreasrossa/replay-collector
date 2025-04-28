@@ -10,6 +10,7 @@ defmodule Collector.Workers.ConsoleConnection do
   alias Collector.Workers.ConsoleConnection.Handler
   alias Collector.Workers.ReplayProcessor
   alias Collector.Utils.ConsoleLogger, as: ConnLogger
+  alias Collector.Workers.ConsoleConnection.EventExtractor
 
   @type connection_details :: %{
           game_data_cursor: binary(),
@@ -19,15 +20,25 @@ defmodule Collector.Workers.ConsoleConnection do
 
   @type command :: byte()
   @type payload_sizes :: %{command() => non_neg_integer()}
+
+  @type game_state :: %{
+          game_id: String.t(),
+          game_start_time: integer() | nil
+        }
+
   @type state :: %{
           wii: Slippi.WiiConsole.t(),
           socket: :gen_tcp.socket() | nil,
           buffer: binary(),
-          replay_processor: pid(),
-          replay_processor_ref: reference(),
+          replay_buffer: binary(),
+          payload_sizes: payload_sizes() | nil,
+          active_replay_processor: pid() | nil,
+          active_replay_processor_ref: reference() | nil,
+          monitored_refs: MapSet.t(reference()),
           connection_details: connection_details(),
           connection_status: :disconnected | :connected | :connecting,
-          last_keepalive: integer()
+          game_state: game_state() | nil,
+          last_message_time: integer()
         }
 
   ##############
@@ -49,16 +60,6 @@ defmodule Collector.Workers.ConsoleConnection do
     GenServer.start_link(__MODULE__, wii_console)
   end
 
-  @doc """
-  Disconnects from the Wii console.
-  ## Parameters
-  - `pid`: The PID of the console connection.
-  """
-  @spec disconnect(atom() | pid() | {atom(), any()} | {:via, atom(), any()}) :: :ok
-  def disconnect(pid) do
-    GenServer.cast(pid, :disconnect)
-  end
-
   ####################
   # SERVER CALLBACKS #
   ####################
@@ -76,7 +77,7 @@ defmodule Collector.Workers.ConsoleConnection do
   @spec init(Slippi.WiiConsole.t()) ::
           {:ok, state()} | {:error, {:already_connected, pid()} | term()}
   def init(wii_console) do
-    ConnLogger.debug("Starting console connection")
+    ConnLogger.info("Starting console connection for #{wii_console.nickname} (#{wii_console.ip})")
 
     ConnLogger.set_wii_context(wii_console)
     # lookup if the console is already connected. return :already_connected if it is.
@@ -94,20 +95,20 @@ defmodule Collector.Workers.ConsoleConnection do
               client_token: 0
             }
 
-            # create a new replay processor
-            {:ok, replay_processor} = ReplayProcessor.start_link(wii_console)
-            replay_processor_ref = Process.monitor(replay_processor)
-
             {:ok,
              %{
                wii: wii_console,
                socket: socket,
                buffer: <<>>,
-               replay_processor: replay_processor,
+               replay_buffer: <<>>,
+               payload_sizes: nil,
+               active_replay_processor: nil,
+               active_replay_processor_ref: nil,
+               monitored_refs: MapSet.new(),
                connection_details: initial_connection_details,
                connection_status: :connected,
                last_message_time: System.system_time(:millisecond),
-               replay_processor_ref: replay_processor_ref
+               game_state: nil
              }}
 
           {:error, reason} ->
@@ -115,14 +116,6 @@ defmodule Collector.Workers.ConsoleConnection do
             {:error, reason}
         end
     end
-  end
-
-  @impl true
-  @spec handle_cast(:disconnect, state :: state()) :: {:stop, :normal, state()}
-  def handle_cast(:disconnect, state) do
-    Handler.close(state.socket)
-    ConnLogger.info("Disconnected from Wii")
-    {:stop, :normal, state}
   end
 
   @impl true
@@ -190,20 +183,24 @@ defmodule Collector.Workers.ConsoleConnection do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, :normal}, %{replay_processor_ref: ref} = state) do
+  def handle_info(
+        {:DOWN, ref, :process, _pid, :normal},
+        %{active_replay_processor_ref: ref} = state
+      ) do
+    ConnLogger.info("Replay processor exited: #{inspect(state)}")
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{replay_processor_ref: ref} = state) do
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{active_replay_processor_ref: ref} = state
+      ) do
     ConnLogger.warning("Replay processor crashed: #{inspect(reason)}")
 
-    # restart replay processor
-    {:ok, replay_processor} = ReplayProcessor.start_link(state.wii)
-    replay_processor_ref = Process.monitor(replay_processor)
+    updated_state = %{state | active_replay_processor: nil, active_replay_processor_ref: nil}
 
-    {:noreply,
-     %{state | replay_processor: replay_processor, replay_processor_ref: replay_processor_ref}}
+    {:noreply, updated_state}
   end
 
   @impl true
@@ -230,18 +227,99 @@ defmodule Collector.Workers.ConsoleConnection do
         :binary.list_to_bin(payload["pos"])
       )
 
-    ConnLogger.debug("Handshake message received: #{inspect(new_state)}")
-
     {:ok, new_state}
   end
 
-  defp handle_replay_message(payload, state) do
-    ReplayProcessor.process_message(state.replay_processor, payload)
+  @spec handle_replay_message(map(), state()) :: {:ok, state()} | {:error, atom()}
+  def handle_replay_message(
+        %{"data" => data, "pos" => read_pos, "nextPos" => next_pos, "forcePos" => force_pos},
+        state
+      ) do
+    binary_data = :binary.list_to_bin(data)
+    read_pos_binary = :binary.list_to_bin(read_pos)
+    next_pos_binary = :binary.list_to_bin(next_pos)
 
-    {:ok, %{state | last_message_time: System.system_time(:millisecond)}}
+    with {:ok, next_cursor} <-
+           validate_cursor(read_pos_binary, next_pos_binary, force_pos, state),
+         {:ok, updated_state} <-
+           process_replay_message(
+             <<state.replay_buffer::binary, binary_data::binary>>,
+             put_in(state.connection_details.game_data_cursor, next_cursor)
+           ) do
+      {:ok, updated_state}
+    else
+      {:error, :position_mismatch} ->
+        {:error, :position_mismatch}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec process_replay_message(binary(), state()) :: {:ok, state()} | {:error, atom()}
+  def process_replay_message(payload, state) do
+    updated_state = Map.put(state, :last_message_time, System.system_time(:millisecond))
+
+    case EventExtractor.process_replay_event_data(payload, updated_state) do
+      {:payload_sizes, payload_sizes, event_data, rest} ->
+        # create a new replay processor
+        {:ok, replay_processor} = ReplayProcessor.start_link(state.wii)
+        replay_processor_ref = Process.monitor(replay_processor)
+
+        # update the state with the new replay processor, payload sizes, and buffer
+        updated_state = %{
+          updated_state
+          | active_replay_processor: replay_processor,
+            active_replay_processor_ref: replay_processor_ref,
+            payload_sizes: payload_sizes,
+            replay_buffer: rest
+        }
+
+        # ingest the payload sizes event
+        ReplayProcessor.process_event(replay_processor, event_data)
+        process_replay_message(rest, updated_state)
+
+      {:event, command, payload, rest} when not is_nil(state.payload_sizes) ->
+        ReplayProcessor.process_event(state.active_replay_processor, <<command::8>> <> payload)
+        process_replay_message(rest, updated_state)
+
+      {:continue, rest} ->
+        {:ok, %{updated_state | replay_buffer: rest}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp handle_keepalive_message(state) do
     %{state | last_message_time: System.system_time(:millisecond)}
+  end
+
+  @spec validate_cursor(binary(), binary(), boolean(), state()) ::
+          {:ok, binary()} | {:error, atom()}
+  def validate_cursor(read_cursor, next_cursor, force_pos, state) do
+    current_cursor = state.connection_details.game_data_cursor
+
+    cond do
+      # Force position for overflow handling
+      force_pos ->
+        {:ok, next_cursor}
+
+      # Normal case - positions match
+      current_cursor == read_cursor ->
+        {:ok, next_cursor}
+
+      # Initial position
+      current_cursor == <<0, 0, 0, 0, 0, 0, 0, 0>> ->
+        {:ok, next_cursor}
+
+      # Position mismatch error
+      current_cursor != read_cursor ->
+        ConnLogger.error(
+          "Position mismatch. Expected: #{inspect(current_cursor)}, Got: #{inspect(read_cursor)}"
+        )
+
+        {:error, :position_mismatch}
+    end
   end
 end

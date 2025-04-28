@@ -26,7 +26,8 @@ defmodule Collector.MixProject do
       {:redix, "~> 1.2"},
       {:jason, "~> 1.4"},
       {:httpoison, "~> 2.0"},
-      {:dotenv, "~> 3.0.0", only: [:dev, :test]}
+      {:dotenv, "~> 3.0.0", only: [:dev, :test]},
+      {:uuid, "~> 1.1"}
     ]
   end
 end
