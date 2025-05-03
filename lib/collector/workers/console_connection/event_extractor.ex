@@ -4,7 +4,6 @@ defmodule Collector.Workers.ConsoleConnection.EventExtractor do
   """
   alias Collector.Workers.ConsoleConnection
   alias Slippi.Parser.PayloadSizesParser
-  alias Collector.Utils.ConsoleLogger, as: ConnLogger
 
   @network_message "HELO\0"
 

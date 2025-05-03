@@ -16,6 +16,10 @@ defmodule Collector.Workers.FileHandler do
     GenServer.cast(pid, {:write_event, event})
   end
 
+  def get_file_path(pid) do
+    GenServer.call(pid, :get_file_path)
+  end
+
   def finalize(pid, metadata) do
     GenServer.cast(pid, {:finalize, metadata})
   end
@@ -53,6 +57,11 @@ defmodule Collector.Workers.FileHandler do
   def handle_call(:cleanup, _from, state) do
     File.rm!(state.file_path)
     {:stop, :normal, state}
+  end
+
+  @impl true
+  def handle_call(:get_file_path, _from, state) do
+    {:reply, state.file_path, state}
   end
 
   @impl true

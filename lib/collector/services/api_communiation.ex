@@ -14,6 +14,7 @@ defmodule Collector.Services.APICommunication do
         }
 
   @type game_started_event :: %{
+          id: String.t(),
           startedAt: non_neg_integer(),
           characterIds: [non_neg_integer()],
           stageId: non_neg_integer(),
@@ -21,7 +22,7 @@ defmodule Collector.Services.APICommunication do
         }
 
   @type game_ended_event :: %{
-          endedAt: non_neg_integer(),
+          id: String.t(),
           path: String.t()
         }
 
@@ -55,8 +56,8 @@ defmodule Collector.Services.APICommunication do
   @impl true
   def handle_call({:game_started, data}, _from, state) do
     case post_game_started(data, state.collector_token) do
-      {:ok, id} ->
-        {:reply, {:ok, id}, state}
+      {:ok, _} ->
+        {:reply, :ok, state}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -89,19 +90,16 @@ defmodule Collector.Services.APICommunication do
       startedAt: data.startedAt,
       characterIds: data.characterIds,
       stageId: data.stageId,
-      wiiMacAddress: data.console.mac
+      wiiMacAddress: data.console.mac,
+      id: data.id
     }
 
     with {:ok, body} <- Jason.encode(data),
          {:ok, response} <- post_request(url, body, headers),
-         {:ok, response_body} <- Jason.decode(response.body),
-         id when is_number(id) <- Map.get(response_body, "id") do
+         {:ok, response_body} <- Jason.decode(response.body) do
       Logger.info("Game started event posted successfully. Response: #{inspect(response_body)}")
-      {:ok, id}
+      {:ok, response_body}
     else
-      {:ok, response_body} ->
-        {:error, response_body}
-
       {:error, reason} ->
         {:error, reason}
     end
@@ -116,19 +114,14 @@ defmodule Collector.Services.APICommunication do
       {"x-collector-token", token}
     ]
 
-    metadata = %{
-      endedAt: data.endedAt
-    }
-
     with {:ok, file_content} <- File.read(data.path),
-         {:ok, metadata} <- Jason.encode(metadata),
          {:ok, _response} <-
            post_request(
              url,
              {:multipart,
               [
                 {:file, file_content, {"form-data", [name: "file", filename: "replay.slp"]}, []},
-                {:metadata, metadata}
+                {"id", data.id}
               ]},
              headers
            ) do

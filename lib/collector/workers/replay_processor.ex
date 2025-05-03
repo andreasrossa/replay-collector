@@ -1,4 +1,5 @@
 defmodule Collector.Workers.ReplayProcessor do
+  alias Collector.Services.APICommunication
   alias Slippi.WiiConsole
   alias Collector.Utils.ConsoleLogger, as: ConnLogger
   alias Collector.Workers.FileHandler
@@ -135,6 +136,19 @@ defmodule Collector.Workers.ReplayProcessor do
           lras: nil
         }
 
+        try do
+          APICommunication.game_started(%{
+            id: state.game_id,
+            startedAt: state.start_time,
+            characterIds: character_ids,
+            stageId: stage_id,
+            console: state.wii_console
+          })
+        rescue
+          error ->
+            ConnLogger.error("Error sending game started event: #{inspect(error)}")
+        end
+
         {:ok, %{state | game_info: game_info}}
 
       {:error, reason} ->
@@ -195,6 +209,12 @@ defmodule Collector.Workers.ReplayProcessor do
           })
 
         ConnLogger.debug("Game ended. Game info: #{inspect(updated_state.game_info)}")
+
+        APICommunication.game_ended(%{
+          id: state.game_id,
+          path: FileHandler.get_file_path(updated_state.file_manager)
+        })
+
         {:game_ended, updated_state}
 
       {:error, reason} ->
