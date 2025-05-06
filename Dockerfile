@@ -8,8 +8,8 @@ RUN mix local.hex --force && \
 
 COPY mix.exs mix.lock ./
 
-RUN mix deps.get --only prod && \
-    mix deps.compile
+RUN mix deps.get --only prod
+RUN mix deps.compile
 
 COPY config/config.exs config/runtime.exs config/
 COPY lib lib
