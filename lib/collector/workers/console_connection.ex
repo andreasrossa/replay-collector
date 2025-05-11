@@ -12,6 +12,9 @@ defmodule Collector.Workers.ConsoleConnection do
   alias Collector.Utils.ConsoleLogger, as: ConnLogger
   alias Collector.Workers.ConsoleConnection.EventExtractor
 
+  @timeout_check_interval_ms :timer.seconds(10)
+  @inactivity_timeout_ms :timer.seconds(30)
+
   @type connection_details :: %{
           game_data_cursor: binary(),
           version: String.t(),
@@ -183,6 +186,19 @@ defmodule Collector.Workers.ConsoleConnection do
   end
 
   @impl true
+  def handle_info(:check_inactivity, state) do
+    idle_time = System.system_time(:millisecond) - state.last_message_time
+
+    if idle_time > @inactivity_timeout_ms do
+      ConnLogger.warning("Connection timed out after #{idle_time}ms of inactivity.")
+      {:stop, :timeout, state}
+    else
+      Process.send_after(self(), :check_inactivity, @timeout_check_interval_ms)
+      {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info(
         {:DOWN, ref, :process, _pid, :normal},
         %{active_replay_processor_ref: ref} = state
@@ -204,8 +220,19 @@ defmodule Collector.Workers.ConsoleConnection do
   end
 
   @impl true
-  def terminate(_reason, state) do
-    ConnLogger.info("Terminating connection: #{inspect(state)}")
+  def terminate(reason, state) do
+    ConnLogger.info("Terminating connection")
+    ConnLogger.debug("Reason: #{inspect(reason)}")
+    ConnLogger.debug("State: #{inspect(state)}")
+
+    if reason == :timeout do
+      ConnLogger.warning("Connection to #{state.wii.nickname} (#{state.wii.ip}) timed out.")
+    end
+
+    # remove the socket from the registry
+    Registry.unregister(Collector.WiiRegistry, state.wii.mac)
+
+    # close the socket
     Handler.close(state.socket)
     :ok
   end
