@@ -232,11 +232,13 @@ defmodule Collector.Workers.ConsoleConnection do
       ConnLogger.warning("Connection to #{state.wii.nickname} (#{state.wii.ip}) timed out.")
     end
 
-    # remove the socket from the registry
-    Registry.unregister(Collector.WiiRegistry, state.wii.mac)
-
     # close the socket
     Handler.close(state.socket)
+    ConnLogger.debug("Socket closed")
+
+    # remove the socket from the registry
+    Registry.unregister(Collector.WiiRegistry, state.wii.mac)
+    ConnLogger.debug("Connection removed from registry")
     :ok
   end
 
