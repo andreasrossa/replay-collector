@@ -140,15 +140,15 @@ defmodule Collector.Services.APICommunication do
         {:ok, response}
 
       {:error, %HTTPoison.Error{} = error} ->
-        Logger.error("Error posting request: #{inspect(error)}")
+        Logger.debug("Error posting request: #{inspect(error)}")
         {:error, error}
 
       {:ok, %HTTPoison.Response{status_code: 401} = response} ->
-        Logger.error("Failed to post request: UNAUTHORIZED", response: response)
+        Logger.debug("Failed to post request: UNAUTHORIZED", response: response)
         {:error, response}
 
       {:ok, %HTTPoison.Response{status_code: 400} = response} ->
-        Logger.error("Failed to post request: BAD REQUEST", response: response)
+        Logger.debug("Failed to post request: BAD REQUEST", response: response)
         {:error, response}
     end
   end

@@ -12,8 +12,8 @@ defmodule Collector.Workers.ConsoleConnection do
   alias Collector.Utils.ConsoleLogger, as: ConnLogger
   alias Collector.Workers.ConsoleConnection.EventExtractor
 
-  @timeout_check_interval_ms :timer.seconds(10)
-  @inactivity_timeout_ms :timer.seconds(30)
+  @timeout_check_interval_ms :timer.seconds(2)
+  @inactivity_timeout_ms :timer.seconds(10)
 
   @type connection_details :: %{
           game_data_cursor: binary(),
@@ -97,6 +97,9 @@ defmodule Collector.Workers.ConsoleConnection do
               version: "0.1.0",
               client_token: 0
             }
+
+            # schedule the first inactivity check
+            Process.send_after(self(), :check_inactivity, @timeout_check_interval_ms)
 
             {:ok,
              %{
@@ -203,7 +206,7 @@ defmodule Collector.Workers.ConsoleConnection do
         {:DOWN, ref, :process, _pid, :normal},
         %{active_replay_processor_ref: ref} = state
       ) do
-    ConnLogger.info("Replay processor exited: #{inspect(state)}")
+    ConnLogger.debug("Replay processor exited: #{inspect(state)}")
     {:noreply, state}
   end
 
