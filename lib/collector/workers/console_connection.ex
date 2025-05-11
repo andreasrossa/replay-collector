@@ -85,8 +85,8 @@ defmodule Collector.Workers.ConsoleConnection do
     ConnLogger.set_wii_context(wii_console)
     # lookup if the console is already connected. return :already_connected if it is.
     case Registry.lookup(Collector.WiiRegistry, wii_console.mac) do
-      [{_pid, _state}] ->
-        ConnLogger.warning("Console already connected: #{wii_console.nickname}")
+      [{pid, _state}] ->
+        ConnLogger.warning("Console already connected: #{wii_console.nickname} (PID: #{pid})")
         {:stop, :already_connected}
 
       [] ->
@@ -97,6 +97,13 @@ defmodule Collector.Workers.ConsoleConnection do
               version: "0.1.0",
               client_token: 0
             }
+
+            {:ok, _} =
+              Registry.register(
+                Collector.WiiRegistry,
+                wii_console.mac,
+                %{console: wii_console, connection: self()}
+              )
 
             # schedule the first inactivity check
             Process.send_after(self(), :check_inactivity, @timeout_check_interval_ms)

@@ -96,16 +96,11 @@ defmodule Slippi.ConnectionScanner do
 
       [] ->
         # start a new connection and register it
-        {:ok, connection} =
+        {:ok, _connection} =
           DynamicSupervisor.start_child(
             Collector.WiiConnectionSupervisor,
             {Collector.Workers.ConsoleConnection, console}
           )
-
-        Registry.register(Collector.WiiRegistry, console.mac, %{
-          console: console,
-          connection: connection
-        })
     end
   end
 
