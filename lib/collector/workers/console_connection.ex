@@ -201,7 +201,7 @@ defmodule Collector.Workers.ConsoleConnection do
 
     if idle_time > @inactivity_timeout_ms do
       ConnLogger.warning("Connection timed out after #{idle_time}ms of inactivity.")
-      {:stop, :timeout, state}
+      {:stop, :normal, state}
     else
       Process.send_after(self(), :check_inactivity, @timeout_check_interval_ms)
       {:noreply, state}
