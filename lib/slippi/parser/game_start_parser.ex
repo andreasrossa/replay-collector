@@ -146,7 +146,7 @@ defmodule Slippi.Parser.GameStartParser do
       character_id: read_uint_8(payload, 0x65 + offset),
       type: read_uint_8(payload, 0x66 + offset),
       start_stocks: read_uint_8(payload, 0x67 + offset),
-      character_color: read_uint_8(payload, 0x68 + offset),
+      skin: read_uint_8(payload, 0x68 + offset),
       team_shade: read_uint_8(payload, 0x6F + offset),
       handicap: read_uint_8(payload, 0x6D + offset),
       team_id: read_uint_8(payload, 0x6E + offset),

@@ -28,4 +28,11 @@ defmodule Collector.Config do
       dir -> dir
     end
   end
+
+  def ws_ingestor_url do
+    case Application.get_env(:collector, :ws_ingestor_url) do
+      nil -> raise "WS_INGESTOR_URL environment variable is not set"
+      url -> url
+    end
+  end
 end

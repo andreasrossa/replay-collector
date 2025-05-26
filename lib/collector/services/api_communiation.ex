@@ -14,15 +14,24 @@ defmodule Collector.Services.APICommunication do
         }
 
   @type game_started_event :: %{
-          id: String.t(),
-          startedAt: non_neg_integer(),
-          characterIds: [non_neg_integer()],
-          stageId: non_neg_integer(),
-          console: WiiConsole.t()
+          key: String.t(),
+          wii: WiiConsole.t(),
+          started_at: non_neg_integer(),
+          stage_id: non_neg_integer(),
+          player_1: %{
+            character_id: non_neg_integer(),
+            tag: String.t(),
+            skin: non_neg_integer()
+          },
+          player_2: %{
+            character_id: non_neg_integer(),
+            tag: String.t(),
+            skin: non_neg_integer()
+          }
         }
 
   @type game_ended_event :: %{
-          id: String.t(),
+          key: String.t(),
           path: String.t()
         }
 
@@ -31,9 +40,9 @@ defmodule Collector.Services.APICommunication do
     GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
   end
 
-  @spec game_started(game_started_event()) :: {:ok, non_neg_integer()} | {:error, any()}
+  @spec game_started(game_started_event()) :: :ok
   def game_started(data) do
-    GenServer.call(__MODULE__, {:game_started, data})
+    GenServer.cast(__MODULE__, {:game_started, data})
   end
 
   @spec game_ended(game_ended_event()) :: :ok
@@ -54,83 +63,68 @@ defmodule Collector.Services.APICommunication do
   end
 
   @impl true
-  def handle_call({:game_started, data}, _from, state) do
-    case post_game_started(data, state.collector_token) do
-      {:ok, _} ->
-        {:reply, :ok, state}
+  def handle_cast({:game_started, data}, state) do
+    url = "#{Collector.Config.api_base_url()}/api/replay/start"
 
+    headers = [
+      {"Content-Type", "application/json"},
+      {"x-collector-token", state.collector_token}
+    ]
+
+    data = %{
+      key: data.key,
+      startedAt: data.started_at,
+      stageId: data.stage_id,
+      player1: build_player_data(data.player_1),
+      player2: build_player_data(data.player_2),
+      wiiMacAddress: data.wii.mac
+    }
+
+    Logger.debug("Game started event data: #{inspect(data)}")
+
+    with {:ok, body} <- Jason.encode(data),
+         {:ok, response} <- post_request(url, body, headers),
+         {:ok, response_body} <- Jason.decode(response.body),
+         Collector.Services.WsIngestorCommunication.game_started(data.key) do
+      Logger.debug("Game started event posted successfully. Response: #{inspect(response_body)}")
+      {:noreply, state}
+    else
       {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        Logger.error("Failed to post game started event: #{inspect(reason)}")
+        {:noreply, state}
     end
   end
 
   @impl true
   @spec handle_cast({:game_ended, game_ended_event()}, state()) :: {:noreply, state()}
   def handle_cast({:game_ended, data}, state) do
-    case post_game_ended(data, state.collector_token) do
-      :ok ->
-        {:noreply, state}
-
-      {:error, _reason} ->
-        {:noreply, state}
-    end
-  end
-
-  @spec post_game_started(game_started_event(), String.t()) ::
-          {:ok, non_neg_integer()} | {:error, any()}
-  defp post_game_started(data, token) do
-    url = "#{Collector.Config.api_base_url()}/api/replay/start"
+    url = "#{Collector.Config.api_base_url()}/api/replay/finish"
 
     headers = [
-      {"Content-Type", "application/json"},
-      {"x-collector-token", token}
+      {"x-collector-token", state.collector_token}
     ]
 
-    data = %{
-      startedAt: data.startedAt,
-      characterIds: data.characterIds,
-      stageId: data.stageId,
-      wiiMacAddress: data.console.mac,
-      id: data.id
-    }
+    form =
+      {:multipart,
+       [
+         {"key", data.key, {"form-data", [name: "key"]}, [{"Content-Type", "text/plain"}]},
+         {:file, data.path,
+          {"form-data", [{:name, "file"}, {:filename, Path.basename(data.path)}]}, []}
+       ]}
 
-    with {:ok, body} <- Jason.encode(data),
-         {:ok, response} <- post_request(url, body, headers),
-         {:ok, response_body} <- Jason.decode(response.body) do
-      Logger.info("Game started event posted successfully. Response: #{inspect(response_body)}")
-      {:ok, response_body}
-    else
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec post_game_ended(game_ended_event(), String.t()) :: :ok | {:error, any()}
-  defp post_game_ended(data, token) do
-    url = "#{Collector.Config.api_base_url()}/api/replay/end"
-
-    headers = [
-      {"Content-Type", "multipart/form-data"},
-      {"x-collector-token", token}
-    ]
-
-    with {:ok, file_content} <- File.read(data.path),
-         {:ok, _response} <-
+    with {:ok, _response} <-
            post_request(
              url,
-             {:multipart,
-              [
-                {:file, file_content, {"form-data", [name: "file", filename: "replay.slp"]}, []},
-                {"id", data.id}
-              ]},
+             form,
              headers
-           ) do
-      Logger.info("Game ended event posted successfully.")
-      :ok
+           ),
+         Collector.Services.WsIngestorCommunication.game_ended(data.key) do
+      Logger.debug("Game ended event posted successfully.")
+      {:noreply, state}
     else
       {:error, reason} ->
         Logger.error("Failed to post game ended event: #{inspect(reason)}")
-        {:error, reason}
+        {:noreply, state}
     end
   end
 
@@ -150,6 +144,17 @@ defmodule Collector.Services.APICommunication do
       {:ok, %HTTPoison.Response{status_code: 400} = response} ->
         Logger.debug("Failed to post request: BAD REQUEST", response: response)
         {:error, response}
+
+      _ ->
+        {:error, "Unknown error"}
     end
+  end
+
+  defp build_player_data(player) do
+    %{
+      characterId: player.character_id,
+      tag: player.tag,
+      skin: player.skin
+    }
   end
 end

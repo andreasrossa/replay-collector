@@ -117,13 +117,17 @@ defmodule Collector.Workers.ReplayProcessor do
                names: %{
                  netplay: player.display_name,
                  code: player.connect_code
-               }
+               },
+               character_id: player.character_id,
+               percent: 0,
+               stocks: 4
              }}
           end)
           |> Map.new()
 
         character_ids =
           players
+          # 3 is the empty player type
           |> Enum.filter(fn player -> player.type != 3 end)
           |> Enum.map(fn player -> player.character_id end)
 
@@ -136,13 +140,17 @@ defmodule Collector.Workers.ReplayProcessor do
           lras: nil
         }
 
+        player_1 = build_player_data(Enum.at(players, 0))
+        player_2 = build_player_data(Enum.at(players, 1))
+
         try do
           APICommunication.game_started(%{
-            id: state.game_id,
-            startedAt: state.start_time,
-            characterIds: character_ids,
-            stageId: stage_id,
-            console: state.wii_console
+            key: state.game_id,
+            wii: state.wii_console,
+            started_at: state.start_time,
+            stage_id: stage_id,
+            player_1: player_1,
+            player_2: player_2
           })
         rescue
           error ->
@@ -167,6 +175,8 @@ defmodule Collector.Workers.ReplayProcessor do
            frame: frame,
            player_index: player_index,
            is_follower: is_follower,
+           percent: percent,
+           stocks_remaining: stocks_remaining,
            internal_character_id: internal_character_id
          }} ->
           if is_follower do
@@ -174,11 +184,16 @@ defmodule Collector.Workers.ReplayProcessor do
           else
             player = state.game_info.players[player_index]
 
+            previous_stocks = player.stocks
+            previous_percent = player.percent
+
             updated_player =
               player
               |> Map.update(:character_usage, %{internal_character_id => 1}, fn usage ->
                 Map.update(usage, internal_character_id, 1, &(&1 + 1))
               end)
+              |> Map.put(:percent, percent)
+              |> Map.put(:stocks, stocks_remaining)
 
             updated_players = Map.put(state.game_info.players, player_index, updated_player)
 
@@ -188,6 +203,22 @@ defmodule Collector.Workers.ReplayProcessor do
                 | players: updated_players,
                   last_frame: frame
               })
+
+            if previous_percent != percent do
+              Collector.Services.WsIngestorCommunication.percentage_updated(
+                state.game_id,
+                state.game_info.players[player_index].character_id,
+                percent
+              )
+            end
+
+            if previous_stocks != stocks_remaining do
+              Collector.Services.WsIngestorCommunication.stocks_updated(
+                state.game_id,
+                state.game_info.players[player_index].character_id,
+                stocks_remaining
+              )
+            end
 
             {:ok, updated_state}
           end
@@ -211,7 +242,7 @@ defmodule Collector.Workers.ReplayProcessor do
         ConnLogger.debug("Game ended. Game info: #{inspect(updated_state.game_info)}")
 
         APICommunication.game_ended(%{
-          id: state.game_id,
+          key: state.game_id,
           path: FileHandler.get_file_path(updated_state.file_manager)
         })
 
@@ -224,5 +255,13 @@ defmodule Collector.Workers.ReplayProcessor do
 
   def handle_replay_event(_event, state) do
     {:ok, state}
+  end
+
+  defp build_player_data(player) do
+    %{
+      character_id: player.character_id,
+      tag: player.nametag,
+      skin: player.skin
+    }
   end
 end

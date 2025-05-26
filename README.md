@@ -9,3 +9,4 @@ and records incoming Slippi Replays.
 - [ ] Implement retries for failing API requests
 - [ ] Gracefully handle wii connection failure
 - [ ] Add lots of debug logs for easier debugging
+- [ ] Continue writing on same file on timeout c 

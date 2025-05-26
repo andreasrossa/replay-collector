@@ -25,9 +25,11 @@ defmodule Collector.MixProject do
       {:codepagex, "~> 0.1.6"},
       {:redix, "~> 1.2"},
       {:jason, "~> 1.4"},
-      {:httpoison, "~> 2.0"},
+      {:req, "~> 0.5.0"},
       {:dotenv, "~> 3.0.0", only: [:dev, :test]},
-      {:uuid, "~> 1.1"}
+      {:uuid, "~> 1.1"},
+      {:httpoison, "~> 2.2"},
+      {:phoenix_client, "~> 0.3"}
     ]
   end
 end
