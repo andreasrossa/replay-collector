@@ -204,19 +204,11 @@ defmodule Collector.Workers.ReplayProcessor do
                   last_frame: frame
               })
 
-            if previous_percent != percent do
-              Collector.Services.WsIngestorCommunication.percentage_updated(
+            if previous_percent != percent || previous_stocks != stocks_remaining do
+              Collector.Services.WsIngestorCommunication.character_state_update(
                 state.game_id,
                 state.game_info.players[player_index].character_id,
-                percent
-              )
-            end
-
-            if previous_stocks != stocks_remaining do
-              Collector.Services.WsIngestorCommunication.stocks_updated(
-                state.game_id,
-                state.game_info.players[player_index].character_id,
-                stocks_remaining
+                %{percent: percent, stocks: stocks_remaining}
               )
             end
 

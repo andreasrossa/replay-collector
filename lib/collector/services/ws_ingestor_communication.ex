@@ -40,12 +40,10 @@ defmodule Collector.Services.WsIngestorCommunication do
     GenServer.cast(__MODULE__, {:game_ended, data})
   end
 
-  def percentage_updated(key, character_id, percentage) do
-    GenServer.cast(__MODULE__, {:percentage_updated, key, character_id, percentage})
-  end
-
-  def stocks_updated(key, character_id, stocks) do
-    GenServer.cast(__MODULE__, {:stocks_updated, key, character_id, stocks})
+  @spec character_state_update(String.t(), String.t(), %{percent: float(), stocks: integer()}) ::
+          :ok
+  def character_state_update(key, character_id, data) do
+    GenServer.cast(__MODULE__, {:character_state_update, key, character_id, data})
   end
 
   # Server API
@@ -65,7 +63,7 @@ defmodule Collector.Services.WsIngestorCommunication do
       }
     }
 
-    case PhoenixClient.Channel.push(state.channel, "replay_started", message) do
+    case Channel.push(state.channel, "replay_started", message) do
       {:ok, _} ->
         Logger.info("Game started event posted successfully.")
         {:noreply, state}
@@ -86,7 +84,7 @@ defmodule Collector.Services.WsIngestorCommunication do
       }
     }
 
-    case PhoenixClient.Channel.push(state.channel, "replay_ended", message) do
+    case Channel.push(state.channel, "replay_ended", message) do
       {:ok, _} ->
         Logger.info("Game ended event posted successfully.")
         {:noreply, state}
@@ -98,19 +96,25 @@ defmodule Collector.Services.WsIngestorCommunication do
   end
 
   @impl true
-  def handle_cast({:percentage_updated, key, character_id, percentage}, state) do
+  @spec handle_cast(
+          {:character_state_update, String.t(), String.t(),
+           %{percent: float(), stocks: integer()}},
+          state()
+        ) :: {:noreply, state()}
+  def handle_cast({:character_state_update, key, character_id, data}, state) do
     message = %{
+      key: key,
+      character_id: character_id,
       payload: %{
-        key: key,
-        character_id: character_id,
-        percentage: percentage
+        percent: data.percent,
+        stocks: data.stocks
       }
     }
 
-    case PhoenixClient.Channel.push(state.channel, "percentage_update", message) do
+    case Channel.push(state.channel, "character_state_update", message) do
       {:ok, _} ->
         Logger.debug(
-          "Percentage updated event posted successfully. (key: #{key}, character_id: #{character_id}, percentage: #{percentage})"
+          "Updated character state: (key: #{key}, character_id: #{character_id}, percent: #{data.percent}, stocks: #{data.stocks})"
         )
 
         {:noreply, state}
@@ -131,7 +135,7 @@ defmodule Collector.Services.WsIngestorCommunication do
       }
     }
 
-    case PhoenixClient.Channel.push(state.channel, "stock_update", message) do
+    case Channel.push(state.channel, "stock_update", message) do
       {:ok, _} ->
         Logger.debug(
           "Stocks updated event posted successfully. (key: #{key}, character_id: #{character_id}, stock: #{stock})"
@@ -164,7 +168,7 @@ defmodule Collector.Services.WsIngestorCommunication do
   end
 
   @impl true
-  def handle_info(%PhoenixClient.Message{event: "phx_error", payload: payload}, state) do
+  def handle_info(%Message{event: "phx_error", payload: payload}, state) do
     Logger.error("WS ingestor error: #{inspect(payload)}")
     {:noreply, state}
   end
