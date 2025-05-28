@@ -20,11 +20,15 @@ defmodule Collector.Services.WsIngestorCommunication do
   def init(_opts) do
     Process.flag(:trap_exit, true)
 
+    Logger.info("Connecting to WS Ingestor on #{Collector.Config.ws_ingestor_url()}")
+
     case Socket.start_link(url: Collector.Config.ws_ingestor_url()) do
       {:ok, socket} ->
+        Logger.info("Connected to WS Ingestor")
         {:ok, %{socket: socket, channel: nil}, {:continue, nil}}
 
       {:error, reason} ->
+        Logger.error("Failed to connect to WS Ingestor: #{inspect(reason)}")
         {:stop, reason}
     end
   end
