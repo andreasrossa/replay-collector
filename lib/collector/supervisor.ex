@@ -12,7 +12,8 @@ defmodule Collector.Supervisor do
       {DynamicSupervisor, name: Collector.WiiConnectionSupervisor, strategy: :one_for_one},
       Slippi.ConnectionScanner,
       Collector.Services.APICommunication,
-      Collector.Services.WsIngestorCommunication
+      Collector.Services.WsIngestorCommunication,
+      Collector.Services.S3Api
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

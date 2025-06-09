@@ -68,7 +68,8 @@ defmodule Collector.Services.APICommunication do
 
     headers = [
       {"Content-Type", "application/json"},
-      {"x-collector-token", state.collector_token}
+      {"x-collector-token", state.collector_token},
+      {"x-vercel-protection-bypass", Collector.Config.vercel_bypass_token()}
     ]
 
     data = %{
@@ -101,7 +102,8 @@ defmodule Collector.Services.APICommunication do
     url = "#{Collector.Config.api_base_url()}/api/replay/finish"
 
     headers = [
-      {"x-collector-token", state.collector_token}
+      {"x-collector-token", state.collector_token},
+      {"x-vercel-protection-bypass", Collector.Config.vercel_bypass_token()}
     ]
 
     form =

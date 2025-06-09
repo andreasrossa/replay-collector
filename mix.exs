@@ -24,11 +24,13 @@ defmodule Collector.MixProject do
     [
       {:codepagex, "~> 0.1.6"},
       {:redix, "~> 1.2"},
-      {:jason, "~> 1.4"},
+      {:ex_aws, "~> 2.0"},
+      {:ex_aws_s3, "~> 2.0"},
+      {:poison, "~> 3.0"},
+      {:hackney, "~> 1.9"},
       {:req, "~> 0.5.0"},
       {:dotenv, "~> 3.0.0", only: [:dev, :test]},
       {:uuid, "~> 1.1"},
-      {:httpoison, "~> 2.2"},
       {:phoenix_client, "~> 0.3"}
     ]
   end

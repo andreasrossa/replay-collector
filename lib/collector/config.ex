@@ -35,4 +35,8 @@ defmodule Collector.Config do
       url -> url
     end
   end
+
+  def vercel_bypass_token do
+    Application.get_env(:collector, :vercel_bypass_token)
+  end
 end

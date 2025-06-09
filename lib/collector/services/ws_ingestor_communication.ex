@@ -35,13 +35,13 @@ defmodule Collector.Services.WsIngestorCommunication do
 
   # Client API
 
-  @spec game_started(String.t()) :: :ok
-  def game_started(key) do
-    GenServer.cast(__MODULE__, {:game_started, key})
+  @spec game_started(String.t(), map()) :: :ok
+  def game_started(key, data) do
+    GenServer.cast(__MODULE__, {:game_started, key, data})
   end
 
-  def game_ended(data) do
-    GenServer.cast(__MODULE__, {:game_ended, data})
+  def game_ended(key, path) do
+    GenServer.cast(__MODULE__, {:game_ended, key, path})
   end
 
   @spec character_state_update(String.t(), String.t(), %{percent: float(), stocks: integer()}) ::
@@ -59,11 +59,12 @@ defmodule Collector.Services.WsIngestorCommunication do
   end
 
   @impl true
-  @spec handle_cast({:game_started, String.t()}, state()) :: {:noreply, state()}
-  def handle_cast({:game_started, key}, state) do
+  @spec handle_cast({:game_started, String.t(), map()}, state()) :: {:noreply, state()}
+  def handle_cast({:game_started, key, data}, state) do
     message = %{
       payload: %{
-        key: key
+        key: key,
+        data: data
       }
     }
 
@@ -81,10 +82,11 @@ defmodule Collector.Services.WsIngestorCommunication do
   end
 
   @impl true
-  def handle_cast({:game_ended, key}, state) do
+  def handle_cast({:game_ended, key, path}, state) do
     message = %{
       payload: %{
-        key: key
+        key: key,
+        path: path
       }
     }
 
