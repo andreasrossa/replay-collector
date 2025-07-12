@@ -107,8 +107,42 @@ defmodule Collector.Workers.ConsoleConnection.ReplayManager do
   # --------------------- DOWN from ReplaySession ----------------------------------
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, %State{} = state) do
-    {:noreply, %State{state | current_session: nil, current_session_ref: nil}}
+  def handle_info(
+        {:DOWN, state.current_session_ref, :process, state.current_session, :normal},
+        %State{} = state
+      ) do
+    ConnLogger.debug("ReplaySession terminated normally", session_pid: state.current_session)
+
+    {:noreply,
+     %State{
+       state
+       | status: :idle,
+         current_session: nil,
+         current_session_ref: nil,
+         cursor: <<0, 0, 0, 0, 0, 0, 0, 0>>,
+         payload_sizes: nil
+     }}
+  end
+
+  @impl true
+  def handle_info(
+        {:DOWN, state.current_session_ref, :process, state.current_session, reason},
+        %State{} = state
+      ) do
+    ConnLogger.error("ReplaySession terminated abnormally",
+      session_pid: state.current_session,
+      reason: reason
+    )
+
+    {:noreply,
+     %State{
+       state
+       | status: :idle,
+         current_session: nil,
+         current_session_ref: nil,
+         cursor: <<0, 0, 0, 0, 0, 0, 0, 0>>,
+         payload_sizes: nil
+     }}
   end
 
   # -----------------------------------------------------------------------------
@@ -135,7 +169,6 @@ defmodule Collector.Workers.ConsoleConnection.ReplayManager do
   end
 
   defp forward_to_session(pid, event_data) do
-    ConnLogger.debug("Forwarding event data to ReplaySession", session_pid: pid, pid: self())
     ReplaySession.process_event(pid, event_data)
   end
 

@@ -69,16 +69,10 @@ defmodule Collector.Workers.ReplaySession do
 
   @spec start_link(String.t()) :: GenServer.on_start()
   def start_link(session_id) do
-    state = %State{
-      session_id: session_id,
-      started_at: DateTime.utc_now(),
-      state: :game_not_started,
-      chunks: []
-    }
-
-    GenServer.start_link(__MODULE__, state, name: via_tuple(session_id))
+    GenServer.start_link(__MODULE__, session_id, name: via_tuple(session_id))
   end
 
+  @spec process_event(pid(), binary()) :: :ok | {:error, any()}
   def process_event(pid, event) do
     GenServer.cast(pid, {:process_event, event})
   end
@@ -88,13 +82,20 @@ defmodule Collector.Workers.ReplaySession do
   # -----------------------------------------------------------------------------
 
   @impl true
-  def init(%State{} = state) do
+  def init(session_id) do
+    state = %State{
+      session_id: session_id,
+      started_at: DateTime.utc_now(),
+      state: :game_not_started,
+      chunks: []
+    }
+
     {:ok, state}
   end
 
   @impl true
-  case process_event_with_state_update(event, state) do
-    def handle_cast({:process_event, event}, %State{} = state) do
+  def handle_cast({:process_event, event}, %State{} = state) do
+    case process_event_with_state_update(event, state) do
       {:ok, %State{state: :game_ended} = updated_state} ->
         {:stop, :normal, updated_state}
 

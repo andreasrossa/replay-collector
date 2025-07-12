@@ -24,6 +24,14 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  def get_cursor(pid) do
+    GenServer.call(pid, :get_cursor)
+  end
+
+  def get_status(pid) do
+    GenServer.call(pid, :get_status)
+  end
+
   # -----------------------------------------------------------------------------
   # State
   # -----------------------------------------------------------------------------
@@ -36,15 +44,26 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
           nintendontVersion: binary()
         }
 
-  @type state :: %{
-          wii: WiiConsole.t(),
-          socket: :gen_tcp.socket() | nil,
-          manager_pid: pid(),
-          buffer: binary(),
-          last_msg_ts: integer(),
-          status: :pending | :handshake | :connected,
-          socket_details: socket_details() | nil
-        }
+  defmodule State do
+    @enforce_keys [:wii, :manager_pid]
+    defstruct wii: nil,
+              socket: nil,
+              manager_pid: nil,
+              buffer: <<>>,
+              last_msg_ts: 0,
+              status: :pending,
+              socket_details: nil
+
+    @type t :: %__MODULE__{
+            wii: WiiConsole.t(),
+            socket: :gen_tcp.socket() | nil,
+            manager_pid: pid(),
+            buffer: binary(),
+            last_msg_ts: integer(),
+            status: :pending | :handshake | :connected,
+            socket_details: socket_details() | nil
+          }
+  end
 
   # -----------------------------------------------------------------------------
   # Server Callbacks
@@ -58,7 +77,7 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
 
     ConnLogger.set_wii_context(wii)
 
-    state = %{
+    state = %State{
       wii: wii,
       socket: nil,
       manager_pid: manager_pid,
@@ -71,23 +90,33 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
     {:ok, state, {:continue, :connect}}
   end
 
+  # -----------------------------------------------------------------------------
+  # New Connection Handler
+  # -----------------------------------------------------------------------------
+
   @impl true
-  def handle_continue(:connect, state) do
-    cursor = GenServer.call(state.manager_pid, :get_cursor)
+  def handle_continue(:connect, %State{} = state) do
+    cursor = ReplayManager.get_cursor(state.manager_pid)
 
     case Handler.connect(state.wii) do
       {:ok, socket} ->
         Handler.send_handshake(socket, cursor)
         Process.send_after(self(), :check_timeout, @timeout_check_interval_ms)
-        {:noreply, %{state | socket: socket, status: :handshake}}
+        {:noreply, %State{state | socket: socket, status: :handshake}}
 
       {:error, reason} ->
         {:stop, reason, state}
     end
   end
 
+  # -----------------------------------------------------------------------------
+  # TCP Callbacks
+  # -----------------------------------------------------------------------------
+
+  # ------------------- TCP Data -------------------------------------------------
+
   @impl true
-  def handle_info({:tcp, _socket, data}, %{buffer: buffer} = state) do
+  def handle_info({:tcp, _socket, data}, %State{buffer: buffer} = state) do
     now = now_ms()
     Process.send_after(self(), :check_timeout, @timeout_check_interval_ms)
 
@@ -96,7 +125,7 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
     result =
       Enum.reduce_while(
         messages,
-        {:ok, %{state | last_msg_ts: now, buffer: new_buffer}},
+        {:ok, %State{state | last_msg_ts: now, buffer: new_buffer}},
         fn msg, {:ok, acc} ->
           case handle_console_message(msg, acc) do
             {:ok, new_state} ->
@@ -117,34 +146,37 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
     end
   end
 
+  # ------------------- TCP Closed -----------------------------------------------
+
   @impl true
-  def handle_info({:tcp_closed, _socket}, state) do
+  def handle_info({:tcp_closed, _socket}, %State{} = state) do
     {:stop, :tcp_closed, state}
   end
 
+  # -----------------------------------------------------------------------------
+  # Callbacks
+  # -----------------------------------------------------------------------------
+
   @impl true
-  def handle_info(:check_timeout, state) do
-    if now_ms() - state.last_msg_ts > @inactivity_ms do
-      ConnLogger.warning("Inactivity timeout")
-      {:stop, :inactivity_timeout, state}
-    else
-      Process.send_after(self(), :check_timeout, @timeout_check_interval_ms)
-      {:noreply, state}
-    end
+  def handle_call(:get_cursor, _from, %State{cursor: cursor} = state) do
+    {:reply, cursor, state}
   end
 
   @impl true
-  def terminate(reason, state) do
-    ConnLogger.debug("Console connection terminated: #{inspect(reason)}")
-    Handler.close(state.socket)
-    :ok
+  def handle_call(:get_status, _from, %State{status: status} = state) do
+    {:reply, status, state}
   end
 
   # -----------------------------------------------------------------------------
-  # Private Functions
+  # Console Message Handlers
   # -----------------------------------------------------------------------------
 
-  defp handle_console_message(%Comms.Message{type: 1, payload: payload}, state) do
+  # 0x01 - Handshake
+  # 0x02 - Replay
+
+  # ------------------- Handshake ------------------------------------------------
+
+  defp handle_console_message(%Comms.Message{type: 1, payload: payload}, %State{} = state) do
     clientToken = payload["clientToken"] |> :binary.list_to_bin() |> :binary.decode_unsigned(:big)
     nintendontVersion = payload["nintendontVersion"] |> :binary.list_to_bin()
     pos = get_cursor(payload)
@@ -159,7 +191,7 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
     end
 
     {:ok,
-     %{
+     %State{
        state
        | status: :connected,
          socket_details: %{
@@ -169,22 +201,52 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
      }}
   end
 
+  # ------------------- Replay ---------------------------------------------------
+
   defp handle_console_message(
          %Comms.Message{type: 2, payload: payload},
-         %{status: :connected} = state
+         %State{status: :connected} = state
        ) do
     ReplayManager.deliver_message(state.manager_pid, payload, get_cursor(payload))
     {:ok, state}
   end
 
-  defp handle_console_message(%Comms.Message{type: 2, payload: payload}, _state) do
+  # ------------------- Error Cases ----------------------------------------------
+
+  defp handle_console_message(%Comms.Message{type: 2, payload: payload}, %State{} = _state) do
     ConnLogger.error("Replay message received before handshake: #{inspect(payload)}")
     {:error, :replay_message_before_handshake}
   end
 
-  defp handle_console_message(msg, _state) do
+  defp handle_console_message(msg, %State{} = _state) do
     ConnLogger.error("Unknown message type: #{inspect(msg.type)}")
     {:error, :unknown_message_type}
+  end
+
+  # -----------------------------------------------------------------------------
+  # Timeout Handler
+  # -----------------------------------------------------------------------------
+
+  @impl true
+  def handle_info(:check_timeout, %State{} = state) do
+    if now_ms() - state.last_msg_ts > @inactivity_ms do
+      ConnLogger.warning("Inactivity timeout")
+      {:stop, :inactivity_timeout, state}
+    else
+      Process.send_after(self(), :check_timeout, @timeout_check_interval_ms)
+      {:noreply, state}
+    end
+  end
+
+  # -----------------------------------------------------------------------------
+  # Terminate Callback
+  # -----------------------------------------------------------------------------
+
+  @impl true
+  def terminate(reason, %State{} = state) do
+    ConnLogger.debug("Console connection terminated: #{inspect(reason)}")
+    Handler.close(state.socket)
+    :ok
   end
 
   # -----------------------------------------------------------------------------
