@@ -9,6 +9,7 @@ defmodule Collector.Workers.ConsoleConnection.Handler do
 
   @doc """
   Establishes a TCP connection to a Wii console.
+  Sends initial handshake message with potential cursor.
   """
   @spec connect(Slippi.WiiConsole.t()) :: {:ok, :gen_tcp.socket()} | {:error, term()}
   def connect(wii_console) do
@@ -18,28 +19,21 @@ defmodule Collector.Workers.ConsoleConnection.Handler do
            [:binary, active: true, packet: :raw]
          ) do
       {:ok, socket} ->
-        case send_handshake(socket) do
-          :ok ->
-            Logger.info("Connected to Wii at #{wii_console.ip}")
-            {:ok, socket}
+        {:ok, socket}
 
-          error ->
-            error
-        end
-
-      error ->
-        error
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @doc """
   Sends the initial handshake message to establish a Slippi connection.
   """
-  @spec send_handshake(:gen_tcp.socket()) :: :ok | {:error, term()}
-  def send_handshake(socket) do
+  @spec send_handshake(:gen_tcp.socket(), binary()) :: :ok | {:error, term()}
+  def send_handshake(socket, cursor) do
     :gen_tcp.send(
       socket,
-      ConsoleCommunication.generate_handshake(<<0, 0, 0, 0, 0, 0, 0, 0>>, 0, false)
+      ConsoleCommunication.generate_handshake(cursor, 0, false)
     )
   end
 

@@ -9,19 +9,26 @@ defmodule Collector.Workers.ConsoleConnection.EventExtractor do
 
   @doc """
   Processes different types of replay events based on command byte.
+  Returns:
+  - {:payload_sizes, payload_sizes, event_data, rest}
+  - {:event, command, payload, rest}
+  - {:continue, rest}
+  - {:error, reason}
+
+  Note: event payloads are prepended with the command byte.
   """
   @spec process_replay_event_data(binary(), ConsoleConnection.state()) ::
           {:payload_sizes, map(), binary(), binary()}
           | {:event, byte(), binary(), binary()}
           | {:continue, binary()}
           | {:error, atom()}
-  def process_replay_event_data(<<>>, _state) do
+  def process_replay_event_data(<<>>, _payload_sizes) do
     {:continue, <<>>}
   end
 
   def process_replay_event_data(
         <<@network_message, rest::binary>>,
-        _state
+        _payload_sizes
       ) do
     {:continue, rest}
   end
@@ -30,7 +37,7 @@ defmodule Collector.Workers.ConsoleConnection.EventExtractor do
   # also, other commands depend on this one to be processed first
   def process_replay_event_data(
         <<0x35, payload_len::unsigned-integer-size(8), payload::binary>>,
-        _state
+        _payload_sizes
       )
       when payload_len > 0 and byte_size(payload) >= payload_len - 1 do
     <<payload::binary-size(payload_len - 1), rest::binary>> = payload
@@ -49,11 +56,11 @@ defmodule Collector.Workers.ConsoleConnection.EventExtractor do
     end
   end
 
-  def process_replay_event_data(binary, state) do
+  def process_replay_event_data(binary, payload_sizes) do
     with {:ok, command, remaining} <- extract_command(binary),
-         {:ok, payload_size} <- get_payload_size(command, state),
+         {:ok, payload_size} <- get_payload_size(command, payload_sizes),
          {:ok, payload, rest} <- extract_payload(remaining, payload_size) do
-      {:event, command, payload, rest}
+      {:event, command, <<command::8>> <> payload, rest}
     else
       {:incomplete, _} ->
         # Not enough data yet, keep in buffer and wait for more
@@ -76,8 +83,8 @@ defmodule Collector.Workers.ConsoleConnection.EventExtractor do
 
   defp extract_payload(_, _), do: {:incomplete, :payload}
 
-  defp get_payload_size(command, state) do
-    case state.payload_sizes[command] do
+  defp get_payload_size(command, payload_sizes) do
+    case payload_sizes[command] do
       nil ->
         {:error, :unknown_command}
 

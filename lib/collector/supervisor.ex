@@ -11,9 +11,8 @@ defmodule Collector.Supervisor do
       {Registry, keys: :unique, name: Collector.WiiRegistry},
       {DynamicSupervisor, name: Collector.WiiConnectionSupervisor, strategy: :one_for_one},
       Slippi.ConnectionScanner,
-      Collector.Services.APICommunication,
-      Collector.Services.WsIngestorCommunication,
-      Collector.Services.S3Api
+      {Registry, keys: :unique, name: Collector.SessionRegistry},
+      Collector.Workers.ReplaySessionSupervisor
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

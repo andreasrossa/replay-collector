@@ -15,7 +15,7 @@ defmodule Collector.Workers.ConsoleConnection.Communication do
   defmodule Message do
     @type t :: %__MODULE__{
             type: integer(),
-            payload: binary()
+            payload: any()
           }
     defstruct [:type, :payload]
   end
