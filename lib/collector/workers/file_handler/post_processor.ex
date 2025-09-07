@@ -1,7 +1,20 @@
 defmodule Collector.Workers.FileHandler.PostProcessor do
-  @spec post_process_replay_file(String.t(), Collector.Workers.ReplayProcessor.game_info()) ::
-          :ok
+  defmodule ReplayMetadata do
+    defstruct [:started_at, :last_frame, :console_nickname, :players, :game_end_info]
+
+    @type t :: %__MODULE__{
+            started_at: DateTime.t(),
+            last_frame: non_neg_integer(),
+            console_nickname: String.t(),
+            players: %{non_neg_integer() => Collector.Workers.ReplaySession.State.player_data()},
+            game_end_info: Collector.Workers.ReplaySession.State.game_end_info()
+          }
+  end
+
+  @spec post_process_replay_file(String.t(), ReplayMetadata.t()) :: :ok
   def post_process_replay_file(file_path, metadata) do
+    IO.inspect(metadata)
+
     footer =
       build_footer_start(metadata)
       |> add_players_data(metadata.players)
@@ -12,7 +25,7 @@ defmodule Collector.Workers.FileHandler.PostProcessor do
   end
 
   defp build_footer_start(metadata) do
-    start_time_str = DateTime.to_iso8601(metadata.start_time |> DateTime.from_unix!(:millisecond))
+    start_time_str = DateTime.to_iso8601(metadata.started_at |> DateTime.from_unix!(:millisecond))
 
     <<"U", 8, "metadata{", "U", 7, "startAtSU", byte_size(start_time_str), start_time_str::binary,
       "U", 9, "lastFramel", metadata.last_frame::signed-integer-size(32), "U", 11,

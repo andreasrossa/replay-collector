@@ -5,7 +5,7 @@ defmodule Collector.MixProject do
     [
       app: :collector,
       version: "0.1.0",
-      elixir: "~> 1.15",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -14,7 +14,7 @@ defmodule Collector.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger],
+      extra_applications: [:logger, :posthog],
       mod: {Collector.Application, []}
     ]
   end
@@ -23,12 +23,11 @@ defmodule Collector.MixProject do
   defp deps do
     [
       {:codepagex, "~> 0.1.6"},
-      {:redix, "~> 1.2"},
       {:ex_aws, "~> 2.0"},
       {:ex_aws_s3, "~> 2.0"},
-      {:poison, "~> 3.0"},
       {:sentry, "~> 10.2.0"},
-      {:jason, "~> 1.2"},
+      {:posthog, "~> 1.0.0"},
+      {:jason, "~> 1.4"},
       {:hackney, "~> 1.8"},
       {:req, "~> 0.5.0"},
       {:dotenv, "~> 3.0.0", only: [:dev, :test]},

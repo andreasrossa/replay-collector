@@ -10,3 +10,8 @@ config :codepagex, :encodings, [
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: [:wii_nickname, :wii_ip]
+
+config :posthog,
+  api_url: "https://eu.i.posthog.com",
+  api_key: "phc_A1OfvPCStTrti02Fc5Ol3I7RwjYumCkuaABGpaog4v2",
+  enabled_capture: true

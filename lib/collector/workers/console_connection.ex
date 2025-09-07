@@ -6,9 +6,10 @@ defmodule Collector.Workers.ConsoleConnection do
 
   use GenServer
 
+  alias Collector.Workers.ReplaySession
+  alias Collector.Workers.ReplaySessionSupervisor
   alias Collector.Workers.ConsoleConnection.Communication, as: ConsoleCommunication
   alias Collector.Workers.ConsoleConnection.Handler
-  alias Collector.Workers.ReplayProcessor
   alias Collector.Utils.ConsoleLogger, as: ConnLogger
   alias Collector.Workers.ConsoleConnection.EventExtractor
 
@@ -35,8 +36,8 @@ defmodule Collector.Workers.ConsoleConnection do
           buffer: binary(),
           replay_buffer: binary(),
           payload_sizes: payload_sizes() | nil,
-          active_replay_processor: pid() | nil,
-          active_replay_processor_ref: reference() | nil,
+          current_session: pid() | nil,
+          current_session_ref: reference() | nil,
           monitored_refs: MapSet.t(reference()),
           connection_details: connection_details(),
           connection_status: :disconnected | :connected | :connecting,
@@ -115,8 +116,8 @@ defmodule Collector.Workers.ConsoleConnection do
                buffer: <<>>,
                replay_buffer: <<>>,
                payload_sizes: nil,
-               active_replay_processor: nil,
-               active_replay_processor_ref: nil,
+               current_session: nil,
+               current_session_ref: nil,
                monitored_refs: MapSet.new(),
                connection_details: initial_connection_details,
                connection_status: :connected,
@@ -224,9 +225,7 @@ defmodule Collector.Workers.ConsoleConnection do
       ) do
     ConnLogger.warning("Replay processor crashed: #{inspect(reason)}")
 
-    updated_state = %{state | active_replay_processor: nil, active_replay_processor_ref: nil}
-
-    {:noreply, updated_state}
+    {:noreply, state}
   end
 
   @impl true
@@ -300,26 +299,25 @@ defmodule Collector.Workers.ConsoleConnection do
     updated_state = Map.put(state, :last_message_time, System.system_time(:millisecond))
 
     case EventExtractor.process_replay_event_data(payload, updated_state) do
-      {:payload_sizes, payload_sizes, event_data, rest} ->
+      {:payload_sizes, payload_sizes, _event_data, rest} ->
         # create a new replay processor
-        {:ok, replay_processor} = ReplayProcessor.start_link(state.wii)
-        replay_processor_ref = Process.monitor(replay_processor)
+        {:ok, session} = ReplaySessionSupervisor.start_session()
+        session_ref = Process.monitor(session)
 
         # update the state with the new replay processor, payload sizes, and buffer
         updated_state = %{
           updated_state
-          | active_replay_processor: replay_processor,
-            active_replay_processor_ref: replay_processor_ref,
+          | current_session: session,
+            current_session_ref: session_ref,
             payload_sizes: payload_sizes,
             replay_buffer: rest
         }
 
         # ingest the payload sizes event
-        ReplayProcessor.process_event(replay_processor, event_data)
         process_replay_message(rest, updated_state)
 
       {:event, command, payload, rest} when not is_nil(state.payload_sizes) ->
-        ReplayProcessor.process_event(state.active_replay_processor, <<command::8>> <> payload)
+        ReplaySession.process_event(state.current_session, <<command::8>> <> payload)
         process_replay_message(rest, updated_state)
 
       {:continue, rest} ->

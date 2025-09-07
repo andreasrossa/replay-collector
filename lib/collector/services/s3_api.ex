@@ -25,7 +25,7 @@ defmodule Collector.Services.S3Api do
     Logger.info("Uploading file to S3: #{name}")
 
     with {:ok, file_content} <- File.read(path),
-         {:ok, _} <- ExAws.S3.put_object(@bucket, name, file_content) do
+         %ExAws.Operation.S3{} <- ExAws.S3.put_object(@bucket, name, file_content) do
       Logger.info("File uploaded to S3: #{name}")
     else
       {:error, reason} ->

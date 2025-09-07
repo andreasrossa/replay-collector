@@ -7,13 +7,14 @@ defmodule Collector.Workers.FileHandler do
         }
 
   # client API
-  @spec start_link(any()) :: :ignore | {:error, any()} | {:ok, pid()}
-  def start_link(state) do
-    GenServer.start_link(__MODULE__, state)
+  @spec start_link(start_time :: DateTime.t(), console_nickname :: String.t()) ::
+          :ignore | {:error, any()} | {:ok, pid()}
+  def start_link(start_time, console_nickname) do
+    GenServer.start_link(__MODULE__, %{start_time: start_time, console_nickname: console_nickname})
   end
 
-  def write_event(pid, event) do
-    GenServer.cast(pid, {:write_event, event})
+  def write(pid, data) do
+    GenServer.cast(pid, {:write, data})
   end
 
   def get_file_path(pid) do
@@ -31,15 +32,15 @@ defmodule Collector.Workers.FileHandler do
   # server callbacks
 
   @impl true
-  def init(state) do
-    file_path = create_new_replay_file(state)
+  def init(%{start_time: start_time, console_nickname: console_nickname}) do
+    file_path = create_new_replay_file(start_time, console_nickname)
 
     {:ok, %{file_path: file_path}}
   end
 
   @impl true
-  def handle_cast({:write_event, event}, state) do
-    File.write!(state.file_path, event, [:append, :binary])
+  def handle_cast({:write, data}, state) do
+    File.write!(state.file_path, data, [:append, :binary])
     {:noreply, state}
   end
 
@@ -80,7 +81,7 @@ defmodule Collector.Workers.FileHandler do
     <<"{U", 3, "raw[$U#l", 0, 0, 0, 0>>
   end
 
-  defp create_new_replay_file({start_time, console_nickname}) do
+  defp create_new_replay_file(start_time, console_nickname) do
     timestamp = start_time
     nickname = console_nickname |> String.replace(~r/[^a-zA-Z0-9_-]/, "_")
     replay_dir = Collector.Config.replay_directory()

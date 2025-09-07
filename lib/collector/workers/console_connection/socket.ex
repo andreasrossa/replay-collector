@@ -20,12 +20,8 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
   # -----------------------------------------------------------------------------
 
   @spec start_link(wii :: WiiConsole.t()) :: GenServer.on_start()
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts)
-  end
-
-  def get_cursor(pid) do
-    GenServer.call(pid, :get_cursor)
+  def start_link(wii) do
+    GenServer.start_link(__MODULE__, wii, name: via_tuple(wii.mac))
   end
 
   def get_status(pid) do
@@ -36,13 +32,10 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
   # State
   # -----------------------------------------------------------------------------
 
-  @timeout_check_interval_ms 2_000
+  @timeout_check_interval_ms 3_000
   @inactivity_ms 15_000
-
-  @type socket_details :: %{
-          clientToken: binary(),
-          nintendontVersion: binary()
-        }
+  @reconnect_delay_ms 1_000
+  @max_connection_attempts 6
 
   defmodule State do
     @enforce_keys [:wii, :manager_pid]
@@ -52,7 +45,8 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
               buffer: <<>>,
               last_msg_ts: 0,
               status: :pending,
-              socket_details: nil
+              socket_details: nil,
+              connection_attempts: 0
 
     @type t :: %__MODULE__{
             wii: WiiConsole.t(),
@@ -61,7 +55,13 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
             buffer: binary(),
             last_msg_ts: integer(),
             status: :pending | :handshake | :connected,
-            socket_details: socket_details() | nil
+            socket_details: socket_details() | nil,
+            connection_attempts: non_neg_integer()
+          }
+
+    @type socket_details :: %{
+            clientToken: binary(),
+            nintendontVersion: binary()
           }
   end
 
@@ -70,8 +70,8 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
   # -----------------------------------------------------------------------------
 
   @impl true
-  def init(opts) do
-    %WiiConsole{mac: mac} = wii = Keyword.fetch!(opts, :wii)
+  def init(wii) do
+    %WiiConsole{mac: mac} = wii
 
     [{manager_pid, _}] = Registry.lookup(Collector.SessionRegistry, {:mgr, mac})
 
@@ -84,7 +84,8 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
       buffer: <<>>,
       last_msg_ts: System.monotonic_time(:millisecond),
       status: :pending,
-      socket_details: nil
+      socket_details: nil,
+      connection_attempts: 0
     }
 
     {:ok, state, {:continue, :connect}}
@@ -96,6 +97,11 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
 
   @impl true
   def handle_continue(:connect, %State{} = state) do
+    if state.connection_attempts > @max_connection_attempts do
+      ConnLogger.error("Too many connection attempts")
+      {:stop, :too_many_connection_attempts, state}
+    end
+
     cursor = ReplayManager.get_cursor(state.manager_pid)
 
     case Handler.connect(state.wii) do
@@ -104,9 +110,19 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
         Process.send_after(self(), :check_timeout, @timeout_check_interval_ms)
         {:noreply, %State{state | socket: socket, status: :handshake}}
 
-      {:error, reason} ->
-        {:stop, reason, state}
+      {:error, _reason} ->
+        Process.send_after(
+          self(),
+          :reconnect,
+          max(@reconnect_delay_ms * state.connection_attempts * 2, @reconnect_delay_ms)
+        )
+
+        {:noreply, %State{state | connection_attempts: state.connection_attempts + 1}}
     end
+  end
+
+  def handle_info(:reconnect, %State{} = state) do
+    {:noreply, state, {:continue, :connect}}
   end
 
   # -----------------------------------------------------------------------------
@@ -154,13 +170,23 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
   end
 
   # -----------------------------------------------------------------------------
-  # Callbacks
+  # Timeout Handler
   # -----------------------------------------------------------------------------
 
   @impl true
-  def handle_call(:get_cursor, _from, %State{cursor: cursor} = state) do
-    {:reply, cursor, state}
+  def handle_info(:check_timeout, %State{} = state) do
+    if now_ms() - state.last_msg_ts > @inactivity_ms do
+      ConnLogger.warning("Inactivity timeout")
+      {:stop, :inactivity_timeout, state}
+    else
+      Process.send_after(self(), :check_timeout, @timeout_check_interval_ms)
+      {:noreply, state}
+    end
   end
+
+  # -----------------------------------------------------------------------------
+  # Callbacks
+  # -----------------------------------------------------------------------------
 
   @impl true
   def handle_call(:get_status, _from, %State{status: status} = state) do
@@ -179,16 +205,8 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
   defp handle_console_message(%Comms.Message{type: 1, payload: payload}, %State{} = state) do
     clientToken = payload["clientToken"] |> :binary.list_to_bin() |> :binary.decode_unsigned(:big)
     nintendontVersion = payload["nintendontVersion"] |> :binary.list_to_bin()
-    pos = get_cursor(payload)
 
-    ConnLogger.debug("Handshake received: #{inspect({clientToken, nintendontVersion, pos})}")
-
-    cursor = ReplayManager.get_cursor(state.manager_pid)
-
-    if cursor != pos do
-      ConnLogger.error("Cursor mismatch: #{inspect(cursor)} != #{inspect(pos)}")
-      {:error, :cursor_mismatch}
-    end
+    ConnLogger.debug("Handshake received: #{inspect({clientToken, nintendontVersion})}")
 
     {:ok,
      %State{
@@ -207,7 +225,7 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
          %Comms.Message{type: 2, payload: payload},
          %State{status: :connected} = state
        ) do
-    ReplayManager.deliver_message(state.manager_pid, payload, get_cursor(payload))
+    ReplayManager.deliver_message(state.manager_pid, payload)
     {:ok, state}
   end
 
@@ -221,21 +239,6 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
   defp handle_console_message(msg, %State{} = _state) do
     ConnLogger.error("Unknown message type: #{inspect(msg.type)}")
     {:error, :unknown_message_type}
-  end
-
-  # -----------------------------------------------------------------------------
-  # Timeout Handler
-  # -----------------------------------------------------------------------------
-
-  @impl true
-  def handle_info(:check_timeout, %State{} = state) do
-    if now_ms() - state.last_msg_ts > @inactivity_ms do
-      ConnLogger.warning("Inactivity timeout")
-      {:stop, :inactivity_timeout, state}
-    else
-      Process.send_after(self(), :check_timeout, @timeout_check_interval_ms)
-      {:noreply, state}
-    end
   end
 
   # -----------------------------------------------------------------------------
@@ -253,9 +256,7 @@ defmodule Collector.Workers.ConsoleConnection.Socket do
   # Helpers
   # -----------------------------------------------------------------------------
 
-  defp get_cursor(payload) do
-    payload["pos"] |> :binary.list_to_bin()
-  end
-
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp via_tuple(mac), do: {:via, Registry, {Collector.SessionRegistry, {:socket, mac}}}
 end

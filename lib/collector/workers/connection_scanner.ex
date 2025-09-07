@@ -2,6 +2,8 @@ defmodule Slippi.ConnectionScanner do
   use GenServer
   require Logger
 
+  alias Posthog
+
   @discovery_port 20582
 
   # Client API
@@ -24,6 +26,9 @@ defmodule Slippi.ConnectionScanner do
          ]) do
       {:ok, socket} ->
         Logger.info("Scanning for Wii consoles on port :#{@discovery_port}")
+
+        Posthog.capture("connection_scanner", "discovered", %{})
+
         {:ok, %{socket: socket}}
 
       {:error, reason} ->
